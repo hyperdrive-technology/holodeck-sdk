@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Create a report to help us improve the Starfleet SDK
+about: Create a report to help us improve the Holodeck SDK
 title: '[BUG] '
 labels: bug
 assignees: ''
@@ -26,9 +26,8 @@ A clear and concise description of what you expected to happen.
 
 **Environment:**
  - SDK Version: [e.g. 0.1.0]
- - Language: [TypeScript/Go]
- - Node.js version: [e.g. 18.17.0] (if TypeScript)
- - Go version: [e.g. 1.22.0] (if Go)
+ - Language: TypeScript
+ - Node.js version: [e.g. 20.x]
  - OS: [e.g. macOS, Windows, Linux]
 
 **Additional context**

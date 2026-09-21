@@ -1,7 +1,7 @@
 {
-  "name": "@starfleet/sdk",
+  "name": "@holodeck/sdk",
   "version": "0.1.0",
-  "description": "Core types and interfaces for the Starfleet ecosystem",
+  "description": "Core types and interfaces for the Holodeck ecosystem",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
@@ -29,7 +29,7 @@
     "prepublishOnly": "npm run build"
   },
   "keywords": [
-    "starfleet",
+    "holodeck",
     "infrastructure",
     "visualization",
     "3d",
@@ -41,12 +41,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hyperdrive-technology/starfleet-sdk.git"
+    "url": "git+https://github.com/hyperdrive-technology/holodeck-sdk.git"
   },
   "bugs": {
-    "url": "https://github.com/hyperdrive-technology/starfleet-sdk/issues"
+    "url": "https://github.com/hyperdrive-technology/holodeck-sdk/issues"
   },
-  "homepage": "https://github.com/hyperdrive-technology/starfleet-sdk#readme",
+  "homepage": "https://github.com/hyperdrive-technology/holodeck-sdk#readme",
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",

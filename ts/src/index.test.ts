@@ -1,5 +1,5 @@
 /**
- * @fileoverview Tests for the Starfleet SDK TypeScript package
+ * @fileoverview Tests for the Holodeck SDK TypeScript package
  */
 
 import { describe, it, expect } from 'vitest';

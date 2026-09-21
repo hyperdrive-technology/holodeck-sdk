@@ -1,7 +1,7 @@
 /**
- * Starfleet SDK - Core Types and Interfaces
+ * Holodeck SDK - Core Types and Interfaces
  *
- * Foundation interfaces for the Starfleet ecosystem.
+ * Foundation interfaces for the Holodeck ecosystem.
  * Used by importers, providers, and visualization components.
  */
 
@@ -386,6 +386,107 @@ export interface AnimationHook {
 
   // Metadata
   metadata?: Record<string, any>;
+}
+
+// =============================================================================
+// SCENE EXTENSION CONTRACTS (Tier 1 + Tier 2)
+// =============================================================================
+
+/**
+ * Framework-agnostic React component slot.
+ * Host apps (editor-2d-react, Hyperdrive UI) map this to `React.ComponentType` at compile time.
+ */
+export type HolodeckComponent = (props: Record<string, unknown>) => unknown;
+
+/**
+ * Palette entry for drag-and-drop node creation in editor-2d-react.
+ */
+export interface ScenePaletteItem {
+  /** Unique palette id (e.g. "vendor:pump-v2"). */
+  id: string;
+  /** Default `SceneNode.type` assigned when dropped. */
+  nodeType: string;
+  label: string;
+  description?: string;
+  /** Optional default geometry/material applied to new nodes. */
+  defaults?: Partial<Pick<SceneNode, 'transform' | 'geometry' | 'material' | 'metadata'>>;
+}
+
+/**
+ * Auto-layout hints consumed by editor-2d-react (dagre direction, spacing, etc.).
+ */
+export interface SceneLayoutConfig {
+  nodeSpacing?: number;
+  rankSpacing?: number;
+  direction?: 'TB' | 'BT' | 'LR' | 'RL';
+  align?: 'UL' | 'UR' | 'DL' | 'DR';
+}
+
+/**
+ * Custom 3D object renderer keyed by `SceneNode.type` for viewer-3d-react.
+ */
+export interface SceneObjectRenderer {
+  /** Matches `SceneNode.type` (e.g. "vendor:pump-v2"). */
+  nodeType: string;
+  /** Host maps to a R3F/React renderer component. */
+  render: HolodeckComponent;
+}
+
+/**
+ * Tier 1 — content pack for **existing** Holodeck 2D/3D scenes.
+ *
+ * Third-party npm packages export a `SceneComponentPack` that the host merges into
+ * built-in registries (`editor-2d-react` node/edge types, `viewer-3d-react` object renderers).
+ * Conflicts on `nodeTypes` / `objectRenderers` keys must fail at registration time.
+ *
+ * Holodeck extensions must **not** compile `.plc`, bind IEC addresses, or deploy runtimes.
+ * Live data enters via generic `Provider` metrics or host-supplied overlay callbacks only.
+ */
+export interface SceneComponentPack {
+  id: string;
+  version: string;
+  /** 2D editor palette (editor-2d-react). */
+  paletteItems?: ScenePaletteItem[];
+  /** Custom React Flow node components keyed by type id. */
+  nodeTypes?: Record<string, HolodeckComponent>;
+  /** Custom React Flow edge components keyed by type id. */
+  edgeTypes?: Record<string, HolodeckComponent>;
+  /** Default layout algorithm configuration for the pack. */
+  layoutConfig?: SceneLayoutConfig;
+  /** 3D object renderers keyed by `SceneNode.type` (viewer-3d-react). */
+  objectRenderers?: Record<string, SceneObjectRenderer>;
+  /**
+   * Optional live-data overlay hook — maps generic metrics/status onto scene nodes.
+   * Must not reference IEC tag names; host apps supply binding semantics.
+   */
+  overlayAdapter?: (node: SceneNode, metrics: Record<string, unknown>) => SceneNode;
+}
+
+/**
+ * Tier 2 — adapter for a **new scene editor or viewer** that still uses `SceneFile`.
+ *
+ * Authors may replace React Flow / R3F internally (P&ID ortho canvas, network topology, etc.)
+ * while keeping `@holodeck/sdk` `SceneFile` as the interchange format — no parallel scene model.
+ */
+export interface SceneEditorAdapter {
+  id: string;
+  name: string;
+  version?: string;
+  /** Extension namespaces this editor owns (e.g. "extensions.acme.pid"). */
+  supportedExtensions?: string[];
+  load(scene: SceneFile): void | Promise<void>;
+  save(): SceneFile | Promise<SceneFile>;
+}
+
+/**
+ * Tier 2 — read-only viewer adapter with the same `SceneFile` contract as `SceneEditorAdapter`.
+ */
+export interface SceneViewerAdapter {
+  id: string;
+  name: string;
+  version?: string;
+  supportedExtensions?: string[];
+  load(scene: SceneFile): void | Promise<void>;
 }
 
 // =============================================================================

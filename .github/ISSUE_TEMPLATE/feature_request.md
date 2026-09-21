@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Suggest an idea for the Starfleet SDK
+about: Suggest an idea for the Holodeck SDK
 title: '[FEATURE] '
 labels: enhancement
 assignees: ''

@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://starfleet.hyperdrive.technology/schema/scenefile.schema.json",
-  "title": "Starfleet Scene File",
-  "description": "JSON Schema for Starfleet infrastructure visualization scene files",
+  "$id": "https://holodeck.hyperdrive.technology/schema/scenefile.schema.json",
+  "title": "Holodeck Scene File",
+  "description": "JSON Schema for Holodeck infrastructure visualization scene files",
   "type": "object",
   "required": ["version", "metadata", "scene"],
   "properties": {

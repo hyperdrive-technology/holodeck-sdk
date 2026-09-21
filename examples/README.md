@@ -1,12 +1,12 @@
-# Starfleet Examples
+# Holodeck Examples
 
-This directory contains example files and tutorials for using Starfleet to create 3D infrastructure visualizations.
+This directory contains example files and tutorials for using Holodeck to create 3D infrastructure visualizations.
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-1. **Install Dependencies**: Make sure you're in the starfleet repository root and install dependencies:
+1. **Install Dependencies**: Make sure you're in the holodeck repository root and install dependencies:
    ```bash
    pnpm install
    ```
@@ -22,12 +22,12 @@ Generate a 3D scene from a Brainboard SVG:
 
 ```bash
 # Generate scene file
-pnpm starfleet generate \
+pnpm holodeck generate \
   --input examples/brainboard-svgs/simple-aws-infrastructure.svg \
   --output aws-scene.json
 
 # Start development server
-pnpm starfleet dev \
+pnpm holodeck dev \
   --input examples/brainboard-svgs/simple-aws-infrastructure.svg \
   --port 3000 \
   --open
@@ -45,7 +45,7 @@ This example shows:
 
 ```bash
 # Generate and serve microservices diagram
-pnpm starfleet dev \
+pnpm holodeck dev \
   --input examples/brainboard-svgs/microservices-architecture.svg \
   --port 3001 \
   --editor
@@ -74,11 +74,11 @@ This example demonstrates:
 2. **Save to examples**: Place the SVG file in `examples/brainboard-svgs/`
 3. **Test import**: Use the CLI to generate a scene:
    ```bash
-   pnpm starfleet generate --input your-diagram.svg --output test-scene.json
+   pnpm holodeck generate --input your-diagram.svg --output test-scene.json
    ```
 4. **View in dev server**:
    ```bash
-   pnpm starfleet dev --input your-diagram.svg
+   pnpm holodeck dev --input your-diagram.svg
    ```
 
 ### SVG Requirements
@@ -119,30 +119,30 @@ For best results, your SVG should:
 
 ```bash
 # Basic generation
-pnpm starfleet generate --input diagram.svg
+pnpm holodeck generate --input diagram.svg
 
 # Custom output and layout
-pnpm starfleet generate \
+pnpm holodeck generate \
   --input diagram.svg \
   --output custom-scene.json \
   --layout grid \
   --spacing 10
 
 # Watch for changes
-pnpm starfleet generate --input diagram.svg --watch
+pnpm holodeck generate --input diagram.svg --watch
 ```
 
 ### Development Server
 
 ```bash
 # Basic dev server
-pnpm starfleet dev --input diagram.svg
+pnpm holodeck dev --input diagram.svg
 
 # Custom port and host
-pnpm starfleet dev --input diagram.svg --port 8080 --host 0.0.0.0
+pnpm holodeck dev --input diagram.svg --port 8080 --host 0.0.0.0
 
 # Editor mode with auto-open
-pnpm starfleet dev --input diagram.svg --editor --open
+pnpm holodeck dev --input diagram.svg --editor --open
 ```
 
 ## 🌐 Accessing Your Scenes
@@ -158,7 +158,7 @@ When running the dev server, you can access:
 1. **Try the examples** above to understand the workflow
 2. **Create your own SVG** diagrams in Brainboard or draw.io
 3. **Explore the generated scenes** by examining the JSON output
-4. **Integrate with React Three Fiber** using the `@starfleet/builder-three` package (coming soon)
+4. **Integrate with React Three Fiber** using the `@holodeck/builder-three` package (coming soon)
 5. **Add live metrics** using provider packages (OTEL, Datadog, etc.)
 
 ## 🤝 Contributing Examples
@@ -172,4 +172,4 @@ Have a great example? We'd love to include it! Please:
 
 ---
 
-**Need help?** Check out the main [Starfleet README](../README.md) or open an issue on GitHub.
+**Need help?** Check out the main [Holodeck README](../README.md) or open an issue on GitHub.

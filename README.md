@@ -1,34 +1,28 @@
-# Starfleet SDK
+# Holodeck SDK
 
-> **Foundation interfaces and types for the Starfleet ecosystem** - A MIT-licensed contract for building importers, providers, and plugins.
+> **Foundation interfaces and types for the Holodeck ecosystem** - A MIT-licensed contract for building importers, providers, and plugins.
 
-[![npm version](https://badge.fury.io/js/@starfleet%2Fsdk.svg)](https://badge.fury.io/js/@starfleet%2Fsdk)
-[![Go Reference](https://pkg.go.dev/badge/github.com/hyperdrive-technology/starfleet-sdk-go.svg)](https://pkg.go.dev/github.com/hyperdrive-technology/starfleet-sdk-go)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Overview
 
-The Starfleet SDK provides the core TypeScript interfaces, Go bindings, and JSON Schema definitions that enable interoperability across the entire Starfleet ecosystem. Whether you're building importers for infrastructure diagrams, providers for live metrics, or custom plugins for 3D visualization, this SDK defines the contracts you need.
+The Holodeck SDK provides **TypeScript** interfaces and JSON Schema for the Holodeck ecosystem — importers, providers, and browser React viewers. **Product policy:** Rust for native services, TypeScript in the browser for HMI; see [LANGUAGE_POLICY.md](../LANGUAGE_POLICY.md).
 
-Starfleet is a comprehensive platform for creating interactive 3D visualizations of infrastructure and systems. Think of it as "Infrastructure as Diagrams" with real-time data integration.
+Holodeck is a platform for interactive infrastructure visualization with live Hyperdrive data.
 
 ## Features
 
-- 🎯 **Type-safe contracts** - Comprehensive TypeScript interfaces and Go structs
-- 🔌 **Plugin architecture** - Standardized interfaces for importers, providers, and animation hooks
-- 📐 **3D scene modeling** - Complete scene graph with nodes, edges, transforms, and materials
-- 🎨 **Material system** - PBR-ready materials with textures and animations
-- 📊 **Live data integration** - Real-time metrics and monitoring data support
-- ✅ **JSON Schema validation** - Validate scene files in any language
-- 🌐 **Multi-language support** - TypeScript and Go bindings included
+- **Type-safe contracts** — TypeScript interfaces + JSON Schema
+- **Plugin architecture** — Importer, Provider, AnimationHook interfaces
+- **3D scene modeling** — Scene graph with nodes, edges, transforms, materials
+- **Live data integration** — Real-time metrics via provider plugins
 
 ## Packages
 
-| Language | Package | Description |
-|----------|---------|-------------|
-| TypeScript | [`@starfleet/sdk`](https://npmjs.com/package/@starfleet/sdk) | Core Scene types, plugin interfaces, utility helpers |
-| Go | [`github.com/hyperdrive-technology/starfleet-sdk-go`](https://pkg.go.dev/github.com/hyperdrive-technology/starfleet-sdk-go) | Generated structs and helper functions |
-| JSON Schema | [`/schema/scenefile.schema.json`](./schema/scenefile.schema.json) | Validation schema for any toolchain |
+| Artifact | Location | Description |
+|----------|----------|-------------|
+| TypeScript | [`@holodeck/sdk`](./ts/) | Core types and plugin interfaces |
+| JSON Schema | [`schema/scenefile.schema.json`](./schema/scenefile.schema.json) | Validation for any toolchain |
 
 ## Core Concepts
 
@@ -49,7 +43,7 @@ Starfleet is a comprehensive platform for creating interactive 3D visualizations
 ### TypeScript
 
 ```bash
-npm install @starfleet/sdk
+npm install @holodeck/sdk
 ```
 
 ```typescript
@@ -61,7 +55,7 @@ import {
   validateScene,
   Importer,
   Provider
-} from '@starfleet/sdk';
+} from '@holodeck/sdk';
 
 // Create a simple infrastructure scene
 const scene: SceneFile = {
@@ -104,7 +98,7 @@ if (!validation.valid) {
 ### Define a Custom Importer
 
 ```typescript
-import { Importer, ImportResult } from '@starfleet/sdk';
+import { Importer, ImportResult } from '@holodeck/sdk';
 
 class TerraformImporter implements Importer {
   id = 'terraform-importer';
@@ -160,7 +154,7 @@ class TerraformImporter implements Importer {
 ### Define a Custom Provider
 
 ```typescript
-import { Provider, MetricsQuery, MetricsResult } from '@starfleet/sdk';
+import { Provider, MetricsQuery, MetricsResult } from '@holodeck/sdk';
 
 class PrometheusProvider implements Provider {
   id = 'prometheus-provider';
@@ -230,76 +224,10 @@ class PrometheusProvider implements Provider {
 }
 ```
 
-### Go
-
-```bash
-go mod init your-project
-go get github.com/hyperdrive-technology/starfleet-sdk-go
-```
-
-```go
-package main
-
-import (
-    "fmt"
-    "time"
-
-    "github.com/hyperdrive-technology/starfleet-sdk-go"
-)
-
-func main() {
-    // Create a scene with some infrastructure nodes
-    scene := starfleet.NewSceneFile("My Infrastructure")
-
-    // Add a server node
-    server := starfleet.SceneNode{
-        ID:   "server-1",
-        Type: "server",
-        Name: "Web Server",
-        Transform: starfleet.NewTransform(),
-        Material: starfleet.NewMaterial(),
-        Status: "healthy",
-        Metadata: map[string]interface{}{
-            "cpu": "85%",
-            "memory": "12GB",
-        },
-    }
-
-    scene.AddNode(server)
-
-    // Add a database node
-    database := starfleet.SceneNode{
-        ID:   "db-1",
-        Type: "database",
-        Name: "Primary Database",
-        Transform: starfleet.NewTransformWithPosition(5, 0, 0),
-        Material: starfleet.NewMaterial(),
-        Status: "healthy",
-    }
-
-    scene.AddNode(database)
-
-    // Connect them with an edge
-    edge := starfleet.SceneEdge{
-        ID:     "conn-1",
-        Source: "server-1",
-        Target: "db-1",
-        Type:   "data-connection",
-        Width:  0.1,
-        Style:  "solid",
-    }
-
-    scene.AddEdge(edge)
-
-    fmt.Printf("Created scene with %d nodes and %d edges\n",
-        scene.GetNodeCount(), scene.GetEdgeCount())
-}
-```
-
 ## Repository Structure
 
 ```
-starfleet-sdk/
+holodeck-sdk/
 ├── schema/
 │   └── scenefile.schema.json    # JSON Schema for validation
 ├── ts/
@@ -308,10 +236,6 @@ starfleet-sdk/
 │   ├── dist/                   # Built packages (generated)
 │   ├── package.json
 │   └── tsconfig.json
-├── go/
-│   ├── models.go               # Go struct definitions
-│   ├── models_test.go          # Go tests
-│   └── go.mod
 ├── examples/
 │   ├── basic-usage/            # Basic usage examples
 │   └── README.md              # Examples documentation
@@ -325,7 +249,7 @@ starfleet-sdk/
 
 ## Scene File Format
 
-A Starfleet scene file is a JSON document that represents a 3D infrastructure visualization:
+A Holodeck scene file is a JSON document that represents a 3D infrastructure visualization:
 
 ```json
 {
@@ -380,21 +304,21 @@ A Starfleet scene file is a JSON document that represents a 3D infrastructure vi
 }
 ```
 
-## Integration with Starfleet Ecosystem
+## Integration with Holodeck Ecosystem
 
-The SDK is designed to work seamlessly with other Starfleet components:
+The SDK is designed to work seamlessly with other Holodeck components:
 
-- **[starfleet](https://github.com/hyperdrive-technology/starfleet)** - Main monorepo with CLI and React components
-- **[starfleet-gateway](https://github.com/hyperdrive-technology/starfleet-gateway)** - Go service for metrics aggregation
-- **[starfleet-importer-tf](https://github.com/hyperdrive-technology/starfleet-importer-tf)** - Terraform infrastructure import
-- **[starfleet-provider-otel](https://github.com/hyperdrive-technology/starfleet-provider-otel)** - OpenTelemetry metrics provider
-- **[starfleet-provider-hyperdrive](https://github.com/hyperdrive-technology/starfleet-provider-hyperdrive)** - Real-time data bridge
+- **[holodeck](https://github.com/hyperdrive-technology/holodeck)** - Main monorepo with CLI and React components
+- **[`core/gateway`](../core/gateway/)** — Rust metrics/sync gateway (not a separate Go repo)
+- **[holodeck-importer-tf](https://github.com/hyperdrive-technology/holodeck-importer-tf)** - Terraform infrastructure import
+- **[holodeck-provider-otel](https://github.com/hyperdrive-technology/holodeck-provider-otel)** - OpenTelemetry metrics provider
+- **[holodeck-provider-hyperdrive](https://github.com/hyperdrive-technology/holodeck-provider-hyperdrive)** - Real-time data bridge
 
 ## Plugin Development
 
 ### Creating an Importer
 
-Importers transform external data sources into Starfleet scene files:
+Importers transform external data sources into Holodeck scene files:
 
 1. Implement the `Importer` interface
 2. Define supported file formats
@@ -429,15 +353,6 @@ npm run build
 npm test
 ```
 
-### Go Module
-
-```bash
-cd go
-go mod tidy
-go build
-go test
-```
-
 ## Versioning
 
 This project follows [Semantic Versioning](https://semver.org/).
@@ -462,10 +377,10 @@ MIT - See [LICENSE](LICENSE) for details.
 
 ## Support
 
-- 📖 [Documentation](https://github.com/hyperdrive-technology/starfleet-sdk#readme)
-- 🐛 [Issues](https://github.com/hyperdrive-technology/starfleet-sdk/issues)
-- 💬 [Discussions](https://github.com/hyperdrive-technology/starfleet-sdk/discussions)
-- 🌟 [Starfleet Organization](https://github.com/hyperdrive-technology)
+- 📖 [Documentation](https://github.com/hyperdrive-technology/holodeck-sdk#readme)
+- 🐛 [Issues](https://github.com/hyperdrive-technology/holodeck-sdk/issues)
+- 💬 [Discussions](https://github.com/hyperdrive-technology/holodeck-sdk/discussions)
+- 🌟 [Hyperdrive Technology](https://github.com/hyperdrive-technology)
 
 ---
 
