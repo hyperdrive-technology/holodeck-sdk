@@ -7,59 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-22
+
+First tagged Holodeck SDK release (formerly Starfleet SDK).
+
 ### Added
-- Comprehensive test suite for TypeScript package
-- Go module tests with JSON marshaling validation
-- GitHub Actions CI/CD pipeline for automated publishing
-- golangci-lint configuration for Go code quality
-- vitest configuration with coverage reporting
+
+- Core TypeScript types: `SceneNode`, `SceneEdge`, `SceneFile`, `AnimationHook`, importers/providers
+- Utilities: `createTransform`, `validateScene`, `calculateSceneStats`
+- JSON Schema for scene file validation
+- **Scene extension contracts**: `SceneComponentPack`, `SceneObjectRenderer`, `ScenePaletteItem`, `SceneLayoutConfig`, `SceneEditorAdapter`, `SceneViewerAdapter` (Tier 1 packs + Tier 2 editor/viewer adapters)
+- TypeScript test suite and vitest coverage reporting
+- Build configuration with tsup
 
 ### Changed
-- Enhanced TypeScript test coverage with integration tests
-- Improved validation functions with better error messages
 
-### Fixed
-- Type definitions alignment between TypeScript and Go packages
+- Package renamed **`@starfleet/sdk` → `@holodeck/sdk`**
+- Docs, schema `$id`, and GitHub URLs rebranded to Holodeck
 
-## [0.1.0] - 2024-01-XX
+### Removed
 
-### Added
-- Core TypeScript interfaces and types (SceneNode, SceneEdge, SceneFile)
-- Plugin interfaces (Importer, Provider, AnimationHook)
-- Utility functions (createTransform, validateScene, calculateSceneStats)
-- Go bindings and structs with JSON schema validation
-- JSON Schema for scene file validation
-- Basic examples and documentation
-- Build configuration with tsup
-- Initial project structure and README
+- Go bindings and golangci-lint configuration (TypeScript + schema are the supported surface)
 
 ### Infrastructure
-- TypeScript package setup with proper exports
-- Go module configuration
-- Build and development scripts
-- ESLint and TypeScript configuration
 
----
+- GitHub Actions publish/test workflows trimmed for the TypeScript-only package
+- `ts/pnpm-workspace.yaml` for local workspace builds
 
-## Release Notes Guidelines
-
-### Version Types
-- **Major (x.0.0)**: Breaking changes that require migration
-- **Minor (0.x.0)**: New features that are backward compatible
-- **Patch (0.0.x)**: Bug fixes and small improvements
-
-### Change Categories
-- **Added**: New features or capabilities
-- **Changed**: Changes in existing functionality
-- **Deprecated**: Soon-to-be removed features
-- **Removed**: Features removed in this release
-- **Fixed**: Bug fixes
-- **Security**: Security vulnerability fixes
-- **Infrastructure**: Changes to build, CI/CD, or development tools
-
-### Breaking Changes
-Breaking changes should be clearly documented with:
-- What changed
-- Why it changed
-- Migration guide for users
-- Timeline for deprecation (if applicable)
+[Unreleased]: https://github.com/hyperdrive-technology/starfleet-sdk/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/hyperdrive-technology/starfleet-sdk/releases/tag/v0.1.0
