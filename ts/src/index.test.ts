@@ -9,6 +9,7 @@ import {
   generateId,
   validateScene,
   calculateSceneStats,
+  liveOverlayCopy,
   type SceneFile,
   type SceneNode,
   type SceneEdge,
@@ -551,5 +552,24 @@ describe('Integration Tests', () => {
 
     const stats = calculateSceneStats(scene);
     expect(stats.nodeCount).toBe(3);
+  });
+});
+
+describe('liveOverlayCopy', () => {
+  it('is Live · <selected target>, including the in-browser PLC fixture', () => {
+    expect(
+      liveOverlayCopy({
+        state: 'disconnected',
+        targetId: 'in-browser',
+        targetLabel: 'in-browser PLC',
+      }),
+    ).toBe('Live · in-browser PLC');
+    expect(
+      liveOverlayCopy({
+        state: 'live',
+        targetId: 'line-1',
+        targetLabel: 'line-1',
+      }),
+    ).toBe('Live · line-1');
   });
 });
