@@ -1,0 +1,25 @@
+---
+description: pstack per-role model choices (overrides skill defaults)
+alwaysApply: true
+---
+# pstack model configuration. One line per role. Delete a line to fall back to the skill default.
+# `inherit-parent` or `auto` as a value: the role runs on the parent chat model (omit Task `model`). Alias entries in a panel list still count toward its fan-out.
+# budget: large (xhigh)
+# Grok 4.6 only. No Claude or GPT slugs. Code, explore, and swarm stay on xhigh-fast. Judgment and hard tasks use xhigh. Arena / architect / interrogate fan out to four Grok variants so panel size stays four.
+feature, refactoring: cursor-grok-4.6-xhigh-fast
+bug-fix: cursor-grok-4.6-xhigh-fast
+perf-issue: cursor-grok-4.6-xhigh-fast
+hillclimb: cursor-grok-4.6-xhigh-fast
+judgment and prose: cursor-grok-4.6-xhigh
+hardest tasks: cursor-grok-4.6-xhigh
+how explorer: cursor-grok-4.6-xhigh-fast
+how explainer: cursor-grok-4.6-xhigh
+why investigators: cursor-grok-4.6-xhigh-fast
+why synthesizer: cursor-grok-4.6-xhigh
+reflect tooling: cursor-grok-4.6-xhigh-fast
+reflect judgment, divergent, synthesizer: cursor-grok-4.6-xhigh
+arena runners: cursor-grok-4.6-xhigh, cursor-grok-4.6-xhigh-fast, cursor-grok-4.6-high, cursor-grok-4.6-high-fast
+arena cross-judge pool: cursor-grok-4.6-xhigh, cursor-grok-4.6-xhigh-fast, cursor-grok-4.6-high, cursor-grok-4.6-high-fast
+swarm workers: cursor-grok-4.6-xhigh-fast
+architect runners: cursor-grok-4.6-xhigh, cursor-grok-4.6-xhigh-fast, cursor-grok-4.6-high, cursor-grok-4.6-high-fast
+interrogate reviewers: cursor-grok-4.6-xhigh, cursor-grok-4.6-xhigh-fast, cursor-grok-4.6-high, cursor-grok-4.6-high-fast

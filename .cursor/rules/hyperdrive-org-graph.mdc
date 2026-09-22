@@ -1,0 +1,35 @@
+---
+description: Hyperdrive sibling repo graph and live-value binding rule
+alwaysApply: true
+---
+# Hyperdrive org graph
+
+Agents in this checkout are in `hyperdrive-technology/starfleet-sdk` (`@holodeck/sdk`). Starfleet is the Holodeck HMI brand. GitHub repos still use the Starfleet names.
+
+Holodeck consumes Hyperdrive runtime data for 2D/3D HMI and visualization. It does not run PLC scan logic, compile `.plc`, bind IEC addresses, or deploy runtimes. Hyperdrive `core` owns control, compile, deploy, and the host API.
+
+## Repos
+
+| Repo | Role |
+|------|------|
+| `hyperdrive-technology/core` (private) | Rust native services: runtime, compiler, historian, `core/gateway` metrics/sync fan-out |
+| `hyperdrive-technology/starfleet` | Holodeck monorepo: `@holodeck/cli`, `@holodeck/editor-2d-react`, `@holodeck/viewer-3d-react` |
+| `hyperdrive-technology/starfleet-sdk` | This repo. MIT contracts: TypeScript interfaces + `schema/scenefile.schema.json` |
+| `hyperdrive-technology/starfleet-provider-hyperdrive` | Live Hyperdrive bridge (host HTTP/WebSocket, port 4444): variables, alarms, scan timing, diagnostics |
+| `hyperdrive-technology/starfleet-provider-otel` | Live OTEL / Prometheus provider for Holodeck scenes |
+| `hyperdrive-technology/starfleet-gateway-grafana` | Proxies Grafana LGTM (Loki, Prometheus, Tempo) for the OTEL provider |
+| `hyperdrive-technology/turso-timeseries` | Rust Turso time-series extension (hypertables, line protocol, WASM ext) |
+| `hyperdrive-technology/aws-controllers-k8s-proxy` | AWS ACK proxy used by the org's cloud/control plane |
+
+Open Holodeck packages depend only on `@holodeck/sdk`. They must not hard-depend on `@holodeck-pro/*`. Native services stay Rust. Browser HMI stays TypeScript.
+
+## Live values stay IEC tails
+
+Scene nodes map to runtime tag names. The live-value identity is the IEC address tail (the last segment of the IEC path), not a renamed metric or a Holodeck-invented key.
+
+- Host apps (Hyperdrive / `core`) supply IEC binding semantics.
+- SDK scene packs and extensions must not reference IEC tag names, compile `.plc`, or deploy runtimes.
+- Live data enters via generic `Provider` metrics or host-supplied overlay callbacks.
+- Overlays show health, alarms, and timing. They do not implement control logic.
+
+When in doubt, keep the on-the-wire and overlay key equal to the IEC tail the runtime already uses.
