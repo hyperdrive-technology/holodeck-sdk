@@ -9,6 +9,7 @@ import {
   generateId,
   validateScene,
   calculateSceneStats,
+  liveOverlayChrome,
   liveOverlayCopy,
   type SceneFile,
   type SceneNode,
@@ -602,5 +603,22 @@ describe('liveOverlayCopy', () => {
         targetLabel: 'in-browser PLC',
       }),
     ).not.toBe('Live · in-browser PLC');
+  });
+});
+
+describe('liveOverlayChrome', () => {
+  it('uses one color pair per connection state', () => {
+    expect(liveOverlayChrome('live')).toEqual({
+      background: 'rgba(16, 185, 129, 0.92)',
+      color: '#042f1e',
+    });
+    expect(liveOverlayChrome('stale')).toEqual({
+      background: 'rgba(245, 158, 11, 0.94)',
+      color: '#3b2503',
+    });
+    expect(liveOverlayChrome('disconnected')).toEqual({
+      background: 'rgba(75, 85, 99, 0.94)',
+      color: '#f9fafb',
+    });
   });
 });
