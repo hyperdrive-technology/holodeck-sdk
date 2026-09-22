@@ -34,5 +34,5 @@ First tagged Holodeck SDK release (formerly Starfleet SDK).
 - GitHub Actions publish/test workflows trimmed for the TypeScript-only package
 - `ts/pnpm-workspace.yaml` for local workspace builds
 
-[Unreleased]: https://github.com/hyperdrive-technology/starfleet-sdk/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/hyperdrive-technology/starfleet-sdk/releases/tag/v0.1.0
+[Unreleased]: https://github.com/hyperdrive-technology/holodeck-sdk/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/hyperdrive-technology/holodeck-sdk/releases/tag/v0.1.0
