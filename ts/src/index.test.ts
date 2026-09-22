@@ -556,10 +556,10 @@ describe('Integration Tests', () => {
 });
 
 describe('liveOverlayCopy', () => {
-  it('is Live · <selected target>, including the in-browser PLC fixture', () => {
+  it('is Live · <selected target> when that target is live', () => {
     expect(
       liveOverlayCopy({
-        state: 'disconnected',
+        state: 'live',
         targetId: 'in-browser',
         targetLabel: 'in-browser PLC',
       }),
@@ -571,5 +571,36 @@ describe('liveOverlayCopy', () => {
         targetLabel: 'line-1',
       }),
     ).toBe('Live · line-1');
+  });
+
+  it('keeps stale and disconnected on the same target label', () => {
+    expect(
+      liveOverlayCopy({
+        state: 'stale',
+        targetId: 'inbound',
+        targetLabel: 'inbound',
+      }),
+    ).toBe('Stale values · inbound');
+    expect(
+      liveOverlayCopy({
+        state: 'disconnected',
+        targetId: 'inbound',
+        targetLabel: 'inbound',
+      }),
+    ).toBe('Disconnected · inbound');
+    expect(
+      liveOverlayCopy({
+        state: 'disconnected',
+        targetId: 'in-browser',
+        targetLabel: 'in-browser PLC',
+      }),
+    ).toBe('Disconnected · in-browser PLC');
+    expect(
+      liveOverlayCopy({
+        state: 'disconnected',
+        targetId: 'in-browser',
+        targetLabel: 'in-browser PLC',
+      }),
+    ).not.toBe('Live · in-browser PLC');
   });
 });
