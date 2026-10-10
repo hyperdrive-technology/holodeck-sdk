@@ -408,6 +408,8 @@ export interface ScenePaletteItem {
   nodeType: string;
   label: string;
   description?: string;
+  /** Palette group heading. Falls back to `defaults.metadata.category`. */
+  category?: string;
   /** Optional default geometry/material applied to new nodes. */
   defaults?: Partial<Pick<SceneNode, 'transform' | 'geometry' | 'material' | 'metadata'>>;
 }
@@ -684,3 +686,9 @@ export function calculateSceneStats(scene: SceneFile): SceneStats {
 
   return stats;
 }
+
+// =============================================================================
+// CONTRIBUTION REGISTRY (extensions / libraries)
+// =============================================================================
+
+export * from './registry.js';
