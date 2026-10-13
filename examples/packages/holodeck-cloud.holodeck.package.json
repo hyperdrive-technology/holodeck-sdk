@@ -1,0 +1,15 @@
+{
+  "$schema": "../../schema/holodeck-package.v1.schema.json",
+  "schemaVersion": "holodeck.package.v1",
+  "id": "holodeck.cloud",
+  "name": "Cloud archetypes",
+  "description": "Vendor-neutral 3D archetypes (server, database, cache, queue, load balancer, function, bucket …) that brand packs put logos on, plus the Arcentry-style light and dark themes.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "contributes": ["holodeck.iso.part", "holodeck.iso.theme"],
+  "engines": { "holodeck.iso": "^1.0" },
+  "entry": "dist/index.js",
+  "assets": "assets",
+  "repository": "github:hyperdrive-technology/holodeck",
+  "keywords": ["library", "cloud", "architecture"]
+}

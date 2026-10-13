@@ -1,0 +1,328 @@
+import { describe, expect, it, vi } from 'vitest';
+import { HOLODECK_DOCUMENT_FORMAT, type HolodeckDocument } from './document';
+import { validateEngine, type HolodeckEngine } from './engine';
+import { HolodeckHost, HolodeckHostError } from './host';
+import { HOLODECK_PACKAGE_SCHEMA, defineHolodeckPackage, type HolodeckPackageManifest } from './package';
+import { createSimProvider } from './provider';
+import { ContributionRegistry, type Contribution, type ContributionKind, type HolodeckExtension } from './registry';
+
+const partKind: ContributionKind<Contribution & { label: string }> = {
+  kind: 'holodeck.iso.part',
+  validate: (x): x is Contribution & { label: string } => typeof (x as { label?: unknown }).label === 'string',
+};
+const themeKind: ContributionKind = { kind: 'holodeck.iso.theme' };
+
+const isoEngine = (apiVersion = '1.2.0'): HolodeckEngine<{ objects: Array<{ id: string; bindings?: Record<string, { connection: string; source: string }> }> }> => ({
+  id: 'holodeck.iso',
+  label: 'Iso',
+  apiVersion,
+  documentFormat: 'holodeck.iso.scene.v1',
+  kinds: [partKind, themeKind],
+  collectBindings: (body) =>
+    body.objects.flatMap((o) => Object.entries(o.bindings ?? {}).map(([param, binding]) => ({ objectId: o.id, param, binding }))),
+  validateBody: (body) => (Array.isArray((body as { objects?: unknown }).objects) ? [] : ['objects: must be an array']),
+});
+
+const manifest = (over: Partial<HolodeckPackageManifest> = {}): HolodeckPackageManifest => ({
+  schemaVersion: HOLODECK_PACKAGE_SCHEMA,
+  id: 'holodeck.cloud',
+  name: 'Cloud',
+  version: '0.1.0',
+  license: 'MIT',
+  contributes: ['holodeck.iso.part'],
+  engines: { 'holodeck.iso': '^1.0' },
+  entry: 'dist/index.js',
+  assets: 'assets',
+  ...over,
+});
+
+const ext = (id: string, version: string, contributions: HolodeckExtension['contributions']): HolodeckExtension => ({
+  id,
+  version,
+  contributions,
+});
+
+describe('HolodeckHost', () => {
+  it('registers the host kinds once and adopts them on a shared registry', () => {
+    const registry = new ContributionRegistry();
+    const a = new HolodeckHost({ name: 'a', registry });
+    expect(['holodeck.provider', 'holodeck.importer', 'holodeck.document.check'].every((k) => a.registry.hasKind(k))).toBe(true);
+    expect(() => new HolodeckHost({ name: 'b', registry })).not.toThrow();
+    expect(new HolodeckHost({ name: 'c' }).registry).not.toBe(registry);
+  });
+
+  describe('engines', () => {
+    it('registers an engine and its kinds; unregistering removes only kinds it registered', () => {
+      const host = new HolodeckHost({ name: 't' });
+      host.registry.registerKind(themeKind); // pre-engine code registered this kind itself
+      const off = host.registerEngine(isoEngine());
+      expect(host.engine('holodeck.iso')?.apiVersion).toBe('1.2.0');
+      expect(host.engines()).toHaveLength(1);
+      expect(host.registry.hasKind('holodeck.iso.part')).toBe(true);
+      off();
+      off();
+      expect(host.engine('holodeck.iso')).toBeUndefined();
+      expect(host.registry.hasKind('holodeck.iso.part')).toBe(false);
+      expect(host.registry.hasKind('holodeck.iso.theme')).toBe(true);
+    });
+
+    it('rejects invalid and duplicate engines', () => {
+      const host = new HolodeckHost({ name: 't' });
+      expect(() => host.registerEngine({ ...isoEngine(), kinds: [{ kind: 'holodeck.flow.block' }] })).toThrow(
+        expect.objectContaining({ code: 'INVALID_ENGINE' }),
+      );
+      host.registerEngine(isoEngine());
+      expect(() => host.registerEngine(isoEngine())).toThrow(expect.objectContaining({ code: 'DUPLICATE_ENGINE' }));
+    });
+
+    it('refuses an engine whose apiVersion breaks an installed package', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.part': [{ id: 'server', label: 'S' } as Contribution] }));
+      expect(() => host.registerEngine(isoEngine('2.0.0'))).toThrow(
+        expect.objectContaining({ code: 'ENGINE_INCOMPATIBLE', details: ['holodeck.cloud needs holodeck.iso ^1.0'] }),
+      );
+      expect(host.registry.hasKind('holodeck.iso.part')).toBe(false);
+    });
+
+    it('undoes its kinds when a pending item fails validation on registration', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(
+        manifest({ contributes: ['holodeck.iso.part', 'holodeck.iso.theme'] }),
+        ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.theme': [{ id: 'light' }], 'holodeck.iso.part': [{ id: 'bad' }] }),
+      );
+      expect(() => host.registerEngine({ ...isoEngine(), kinds: [themeKind, partKind] })).toThrow();
+      expect(host.registry.hasKind('holodeck.iso.theme')).toBe(false);
+      expect(host.engine('holodeck.iso')).toBeUndefined();
+    });
+
+    it('validateEngine reports every descriptor problem', () => {
+      expect(validateEngine(isoEngine())).toEqual([]);
+      expect(validateEngine(null)).toEqual(['engine: must be an object']);
+      expect(
+        validateEngine({ id: 'Iso', label: '', apiVersion: '1', documentFormat: '', kinds: 'x', collectBindings: 1, validateBody: 'x' }),
+      ).toHaveLength(7);
+      expect(validateEngine({ ...isoEngine(), kinds: [partKind, partKind, { kind: 7 }] })).toEqual([
+        'kinds[1]: "holodeck.iso.part" is listed twice',
+        'kinds[2]: must be a contribution kind with a dotted name',
+      ]);
+    });
+  });
+
+  describe('packages', () => {
+    it('installs from an entry module with an asset resolver and reports pending engines', async () => {
+      const host = new HolodeckHost({ name: 'studio' });
+      const seen: string[] = [];
+      const module = defineHolodeckPackage({
+        manifest: manifest(),
+        createExtension: async (ctx) => {
+          seen.push(ctx.host, ctx.assetUrl('models/server.glb'));
+          return ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.part': [{ id: 'server', label: 'Server' } as Contribution] });
+        },
+      });
+      const report = await host.installPackage(manifest(), module, {
+        manifestUrl: 'https://cdn.example/holodeck-cloud/0.1.0/holodeck.package.json',
+        owner: 'acme.bundle',
+      });
+      expect(seen).toEqual(['studio', 'https://cdn.example/holodeck-cloud/0.1.0/assets/models/server.glb']);
+      expect(report).toEqual({
+        packageId: 'holodeck.cloud',
+        install: { extensionId: 'holodeck.cloud', installed: {}, pending: ['holodeck.iso.part'] },
+        unresolvedEngines: ['holodeck.iso'],
+      });
+      expect(host.package('holodeck.cloud')).toEqual({ manifest: manifest(), owner: 'acme.bundle' });
+      host.registerEngine(isoEngine());
+      expect(host.registry.list('holodeck.iso.part')).toHaveLength(1);
+    });
+
+    it('uses an explicit assetBase, and errors when a package asks for assets without one', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const urls: string[] = [];
+      await host.installPackage(
+        manifest(),
+        { createExtension: (ctx) => (urls.push(ctx.assetUrl('a.svg')), ext('holodeck.cloud', '0.1.0', {})) },
+        { assetBase: 'https://x/assets' },
+      );
+      expect(urls).toEqual(['https://x/assets/a.svg']);
+      await expect(
+        host.installPackage(manifest({ id: 'holodeck.b' }), { createExtension: (ctx) => (ctx.assetUrl('a.svg'), ext('holodeck.b', '0.1.0', {})) }),
+      ).rejects.toThrow(/no assetBase or manifestUrl/);
+      expect(host.package('holodeck.b')).toBeUndefined();
+    });
+
+    it('rejects invalid manifests, duplicates and concurrent installs of the same id', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await expect(host.installPackage({ id: 'x' }, ext('x', '1.0.0', {}))).rejects.toMatchObject({ code: 'INVALID_MANIFEST' });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => (release = r));
+      const first = host.installPackage(manifest(), { createExtension: async () => (await gate, ext('holodeck.cloud', '0.1.0', {})) });
+      await expect(host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}))).rejects.toMatchObject({ code: 'DUPLICATE_PACKAGE' });
+      release();
+      await first;
+      await expect(host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}))).rejects.toMatchObject({ code: 'DUPLICATE_PACKAGE' });
+    });
+
+    it('checks requires (missing and wrong version)', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const aws = manifest({ id: 'holodeck.aws', requires: { 'holodeck.cloud': '^0.2' } });
+      await expect(host.installPackage(aws, ext('holodeck.aws', '0.1.0', {}))).rejects.toMatchObject({
+        code: 'MISSING_REQUIREMENT',
+        details: ['holodeck.cloud ^0.2 is not installed'],
+      });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}));
+      await expect(host.installPackage(aws, ext('holodeck.aws', '0.1.0', {}))).rejects.toMatchObject({
+        details: ['holodeck.cloud ^0.2 is required, 0.1.0 is installed'],
+      });
+      expect(host.package('holodeck.aws')).toBeUndefined();
+    });
+
+    it('rejects packages for an incompatible registered engine', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      host.registerEngine(isoEngine('2.0.0'));
+      await expect(host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}))).rejects.toMatchObject({
+        code: 'ENGINE_INCOMPATIBLE',
+        details: ['holodeck.iso ^1.0 is required, 2.0.0 is registered'],
+      });
+    });
+
+    it('rejects extensions that disagree with the manifest, including an embedded manifest', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await expect(
+        host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.theme': [{ id: 't' }] })),
+      ).rejects.toMatchObject({ code: 'MANIFEST_MISMATCH' });
+      await expect(
+        host.installPackage(manifest(), {
+          manifest: manifest({ version: '0.2.0' }),
+          createExtension: () => ext('holodeck.cloud', '0.1.0', {}),
+        }),
+      ).rejects.toMatchObject({ details: ['the entry module embeds a manifest for a different id or version'] });
+    });
+
+    it('propagates registry errors without recording the package', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      host.registerEngine(isoEngine());
+      await expect(
+        host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.part': [{ id: 'nolabel' }] })),
+      ).rejects.toMatchObject({ code: 'INVALID_ITEM' });
+      expect(host.packages()).toEqual([]);
+    });
+
+    it('records a package whose install committed even though a hook threw', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      host.registry.registerKind({
+        kind: 'holodeck.iso.part',
+        onInstall: () => {
+          throw new Error('hook');
+        },
+        onUninstall: () => {
+          throw new Error('unhook');
+        },
+      });
+      await expect(host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.part': [{ id: 'x' }] }))).rejects.toBeInstanceOf(
+        AggregateError,
+      );
+      expect(host.package('holodeck.cloud')).toBeDefined();
+      expect(() => host.uninstallPackage('holodeck.cloud')).toThrow(AggregateError);
+      expect(host.package('holodeck.cloud')).toBeUndefined();
+    });
+
+    it('uninstall refuses while required, and for unknown ids', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}));
+      await host.installPackage(manifest({ id: 'holodeck.aws', requires: { 'holodeck.cloud': '^0.1' } }), ext('holodeck.aws', '0.1.0', {}));
+      expect(() => host.uninstallPackage('holodeck.cloud')).toThrow(
+        expect.objectContaining({ code: 'REQUIRED_BY', details: ['holodeck.aws requires holodeck.cloud'] }),
+      );
+      host.uninstallPackage('holodeck.aws');
+      host.uninstallPackage('holodeck.cloud');
+      expect(host.packages()).toEqual([]);
+      expect(() => host.uninstallPackage('holodeck.cloud')).toThrow(expect.objectContaining({ code: 'UNKNOWN_PACKAGE' }));
+    });
+
+    it('uninstallOwnedBy removes an owner set dependents-first, or nothing', async () => {
+      const host = new HolodeckHost({ name: 'hyperdrive-ui' });
+      const owner = 'acme.extension';
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner });
+      await host.installPackage(manifest({ id: 'acme.a', requires: { 'holodeck.cloud': '*' } }), ext('acme.a', '0.1.0', {}), { owner });
+      await host.installPackage(manifest({ id: 'acme.b', requires: { 'acme.a': '*' } }), ext('acme.b', '0.1.0', {}), { owner });
+      await host.installPackage(manifest({ id: 'user.c', requires: { 'acme.b': '*' } }), ext('user.c', '0.1.0', {}));
+      expect(() => host.uninstallOwnedBy(owner)).toThrow(expect.objectContaining({ code: 'REQUIRED_BY', details: ['user.c requires acme.b'] }));
+      expect(host.packages()).toHaveLength(4);
+      host.uninstallPackage('user.c');
+      expect(host.uninstallOwnedBy(owner)).toEqual(['acme.b', 'acme.a', 'holodeck.cloud']);
+      expect(host.packages()).toEqual([]);
+      expect(host.uninstallOwnedBy('nobody')).toEqual([]);
+    });
+
+    it('uninstallOwnedBy finishes the set and reports hook failures together', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      host.registry.registerKind({
+        kind: 'holodeck.iso.part',
+        onUninstall: () => {
+          throw new Error('unhook');
+        },
+      });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.part': [{ id: 'a' }] }), { owner: 'o' });
+      await host.installPackage(manifest({ id: 'holodeck.x' }), ext('holodeck.x', '0.1.0', { 'holodeck.iso.part': [{ id: 'b' }] }), { owner: 'o' });
+      expect(() => host.uninstallOwnedBy('o')).toThrow(AggregateError);
+      expect(host.packages()).toEqual([]);
+    });
+  });
+
+  describe('documents', () => {
+    const doc = (body: unknown, engine = 'holodeck.iso'): HolodeckDocument => ({
+      format: HOLODECK_DOCUMENT_FORMAT,
+      id: 'd',
+      name: 'D',
+      engine,
+      connections: [{ id: 'demo', provider: 'holodeck.sim' }],
+      body,
+    });
+
+    it('runs engine body validation, installed checks, and warns about unknown engines', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      host.registerEngine(isoEngine());
+      await host.installPackage(
+        manifest({ id: 'acme.lint', contributes: ['holodeck.document.check'] }),
+        ext('acme.lint', '0.1.0', {
+          'holodeck.document.check': [
+            { id: 'acme.named', label: 'Named', engines: ['*'], check: (d: HolodeckDocument) => (d.name ? [] : [{ severity: 'warning', message: 'unnamed' }]) } as Contribution,
+          ],
+        }),
+      );
+      expect(await host.checkDocument(doc({ objects: [] }))).toEqual([]);
+      expect(await host.checkDocument({ ...doc({}), name: '' })).toEqual([
+        { check: 'holodeck.iso.body', severity: 'error', code: 'INVALID_BODY', message: 'objects: must be an array' },
+        { check: 'acme.named', severity: 'warning', message: 'unnamed' },
+      ]);
+      expect(await host.checkDocument(doc({}, 'holodeck.flow'))).toEqual([
+        { check: 'holodeck.host', severity: 'warning', code: 'UNKNOWN_ENGINE', message: 'engine "holodeck.flow" is not registered' },
+      ]);
+    });
+
+    it('drives live values from a document end to end: engine bindings → hub → sim provider', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const engine = isoEngine();
+      host.registerEngine(engine);
+      await host.installPackage(
+        manifest({ id: 'holodeck.sim', contributes: ['holodeck.provider'], providers: ['holodeck.sim'] }),
+        ext('holodeck.sim', '0.1.0', { 'holodeck.provider': [createSimProvider({ schedule: () => () => {} })] }),
+      );
+      const d = doc({ objects: [{ id: 'web', bindings: { label: { connection: 'demo', source: 'const:"OK"' } } }] });
+      const hub = host.createProviderHub({ now: () => 0 });
+      const listener = vi.fn();
+      hub.subscribe(listener);
+      hub.setConnections(d.connections ?? []);
+      hub.setBindings(engine.collectBindings!(d.body as Parameters<NonNullable<typeof engine.collectBindings>>[0]));
+      await hub.settled();
+      expect(hub.getSnapshot().metrics).toEqual({ web: { label: 'OK' } });
+      expect(listener).toHaveBeenCalled();
+      await hub.dispose();
+    });
+  });
+
+  it('HolodeckHostError lists details in its message', () => {
+    const e = new HolodeckHostError('bad', 'INVALID_MANIFEST', ['a', 'b']);
+    expect(e.message).toBe('bad:\n- a\n- b');
+    expect(new HolodeckHostError('plain', 'UNKNOWN_PACKAGE').message).toBe('plain');
+  });
+});

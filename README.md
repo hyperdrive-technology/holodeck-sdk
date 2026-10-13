@@ -60,9 +60,15 @@ and how local commands map to CI.
 | --- | --- |
 | [`ts/src/index.ts`](ts/src/index.ts) | Scene types, importer/provider contracts, extension adapters, and utilities; package entry point |
 | [`ts/src/registry.ts`](ts/src/registry.ts) | `ContributionRegistry`, extension routing, and known contribution kinds |
+| [`ts/src/package.ts`](ts/src/package.ts), [`host.ts`](ts/src/host.ts), [`engine.ts`](ts/src/engine.ts) | `holodeck.package.v1` manifests, `HolodeckHost` (install, requires, engine compatibility, ownership), engine descriptors |
+| [`ts/src/document.ts`](ts/src/document.ts), [`provider.ts`](ts/src/provider.ts), [`hub.ts`](ts/src/hub.ts) | Document envelope and bindings, provider contract + `holodeck.sim` reference provider + conformance kit, `ProviderHub` |
+| [`ts/src/checks.ts`](ts/src/checks.ts), [`version.ts`](ts/src/version.ts) | Document checks and importers; version ranges |
+| [`docs/PACKAGING.md`](docs/PACKAGING.md) | How engines, themes, libraries and providers are packaged, installed and embedded in host products |
 | [`ts/src/index.test.ts`](ts/src/index.test.ts), [`ts/src/registry.test.ts`](ts/src/registry.test.ts) | Colocated unit tests |
 | [`ts/package.json`](ts/package.json), [`ts/pnpm-lock.yaml`](ts/pnpm-lock.yaml) | Package scripts, dependencies, and lockfile |
 | [`schema/scenefile.schema.json`](schema/scenefile.schema.json) | JSON Schema for the scene interchange format |
+| [`schema/holodeck-package.v1.schema.json`](schema/holodeck-package.v1.schema.json), [`schema/holodeck-document.v1.schema.json`](schema/holodeck-document.v1.schema.json) | JSON Schemas for package manifests and the document envelope |
+| [`examples/packages/`](examples/packages/) | Example manifests: iso engine, cloud archetypes, AWS components, AWS provider, logic blocks |
 | [`examples/README.md`](examples/README.md) | Pointers to SDK usage examples |
 | [`.github/workflows/test.yml`](.github/workflows/test.yml) | Pull request and `main` checks |
 | [`.github/workflows/publish.yml`](.github/workflows/publish.yml) | Tag-triggered package release workflow |
@@ -81,6 +87,20 @@ and how local commands map to CI.
   to the same `SceneFile` interchange format.
 - **ContributionRegistry** routes extension contributions to registered kinds
   and keeps contributions for unregistered kinds pending.
+
+Packaging (v1, [docs/PACKAGING.md](docs/PACKAGING.md)) builds products from four pieces:
+
+- **Engine**: a canvas technology with its own document body and kinds
+  (`holodeck.iso` on React Three Fiber, `holodeck.flow` on xyflow).
+- **Theme**: visual tokens for one engine (`<engine>.theme`).
+- **Library**: placeable parts, components or blocks plus their assets.
+- **Provider**: live data for opaque `source` strings, with optional browse, write,
+  history, discovery and `deploy` (run a flow document).
+
+They ship as packages with a `holodeck.package.json` manifest and install through
+`HolodeckHost`. A `ProviderHub` turns a `HolodeckDocument`'s connections and
+bindings into per-object values for the engine. Host products embed Holodeck
+packages by reference and ship their own providers; Holodeck never depends on them.
 
 The SDK is domain-neutral. Hosts supply PLC bindings and runtime behavior.
 See the [extension architecture](https://github.com/hyperdrive-technology/core/blob/main/docs/EXTENSIONS_AND_LIBRARIES.md)
@@ -143,6 +163,25 @@ registry.install(packToExtension({
 }));
 
 console.log(registry.list(HOLODECK_KINDS.flowPalette));
+```
+
+### Packages, documents and live data
+
+```typescript
+import { HolodeckHost, createSimProvider } from '@holodeck/sdk';
+
+const host = new HolodeckHost({ name: 'my-app' });
+host.registerEngine(isoEngine);                         // from the engine package
+await host.installPackage(awsManifest, awsEntryModule, { manifestUrl });
+await host.installPackage(simManifest, {                // or a plain extension
+  id: 'holodeck.sim', version: '0.1.0',
+  contributions: { 'holodeck.provider': [createSimProvider()] },
+});
+
+const hub = host.createProviderHub();
+hub.setConnections(doc.connections ?? []);
+hub.setBindings(isoEngine.collectBindings(doc.body));
+hub.subscribe(() => render(hub.getSnapshot().metrics)); // objectId → param → value
 ```
 
 ### Registry behaviour

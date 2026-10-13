@@ -1,0 +1,22 @@
+{
+  "$schema": "../../schema/holodeck-package.v1.schema.json",
+  "schemaVersion": "holodeck.package.v1",
+  "id": "holodeck.provider-aws",
+  "name": "AWS live data",
+  "description": "CloudWatch metrics and alarm states as live signals, and discovery of an account's resources for placing on a canvas.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "contributes": ["holodeck.provider", "holodeck.importer"],
+  "providers": ["aws.cloudwatch"],
+  "entry": "dist/index.js",
+  "permissions": {
+    "network": [
+      "https://monitoring.*.amazonaws.com",
+      "https://tagging.*.amazonaws.com",
+      "https://sts.amazonaws.com",
+      "https://sts.*.amazonaws.com"
+    ]
+  },
+  "repository": "github:hyperdrive-technology/holodeck",
+  "keywords": ["provider", "aws", "cloudwatch"]
+}

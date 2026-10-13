@@ -54,3 +54,7 @@ jobs:
       # ajv-formats is needed for "date-time" etc. (strict mode rejects unknown formats).
       - name: Compile schema
         run: npx -y -p ajv-cli@5 -p ajv-formats@3 ajv compile -c ajv-formats -s schema/scenefile.schema.json
+      - name: Compile package and document schemas (draft 2020-12)
+        run: npx -y -p ajv-cli@5 -p ajv-formats@3 ajv compile --spec=draft2020 -c ajv-formats -s schema/holodeck-package.v1.schema.json -s schema/holodeck-document.v1.schema.json
+      - name: Validate example package manifests
+        run: npx -y -p ajv-cli@5 -p ajv-formats@3 ajv validate --spec=draft2020 -c ajv-formats -s schema/holodeck-package.v1.schema.json -d "examples/packages/*.holodeck.package.json"

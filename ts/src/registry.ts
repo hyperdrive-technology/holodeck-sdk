@@ -436,6 +436,16 @@ export const HOLODECK_KINDS = {
   isoTheme: 'holodeck.iso.theme',
   isoAnimator: 'holodeck.iso.animator',
   isoInspector: 'holodeck.iso.inspector',
+  /** Flow engine: data-driven block definitions (ports, params, `evaluate`). See docs/PACKAGING.md §7. */
+  flowBlock: 'holodeck.flow.block',
+  flowTheme: 'holodeck.flow.theme',
+  // Engine-agnostic kinds, registered by `HolodeckHost` (src/host.ts).
+  /** Live data source (`HolodeckProvider`, src/provider.ts). */
+  provider: 'holodeck.provider',
+  /** Converts external files into a `HolodeckDocument` (`HolodeckImporter`, src/checks.ts). */
+  importer: 'holodeck.importer',
+  /** Lint/check over a whole document (`DocumentCheck`, src/checks.ts). */
+  documentCheck: 'holodeck.document.check',
 } as const;
 
 export interface FlowComponentContribution extends Contribution {
