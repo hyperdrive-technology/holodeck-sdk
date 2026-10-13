@@ -12,14 +12,8 @@ concurrency:
 
 jobs:
   test-typescript:
-    name: Test TypeScript (node ${{ matrix.node-version }})
+    name: Test TypeScript
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        # package.json engines is >=18; test the current LTS lines. 26 is what the
-        # holodeck repo CI uses, so the SDK is exercised on the same runtime.
-        node-version: [24, 26]
     defaults:
       run:
         working-directory: ts
@@ -34,7 +28,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version-file: .node-version
           cache: pnpm
           cache-dependency-path: ts/pnpm-lock.yaml
 
@@ -55,7 +49,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version-file: .node-version
       # `ajv validate` needs -d data; `compile` checks the schema itself.
       # ajv-formats is needed for "date-time" etc. (strict mode rejects unknown formats).
       - name: Compile schema
