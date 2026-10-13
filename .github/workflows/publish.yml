@@ -1,14 +1,10 @@
 name: Publish Packages
 
+# Tag-only: PR / main checks live in test.yml.
 on:
   push:
     tags:
       - 'v*'
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
 
 jobs:
   test-typescript:
@@ -19,27 +15,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: ts/package-lock.json
-          
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: 8
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
           
       - name: Install dependencies
         run: |
           cd ts
           pnpm install --frozen-lockfile
-          
-      - name: Lint
-        run: |
-          cd ts
-          pnpm lint
           
       - name: Type check
         run: |
@@ -54,12 +45,7 @@ jobs:
       - name: Test
         run: |
           cd ts
-          pnpm test
-          
-      - name: Test coverage
-        run: |
-          cd ts
-          pnpm test:coverage
+          pnpm exec vitest run
 
   publish-npm:
     name: Publish to NPM
@@ -71,16 +57,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-          
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: 8
           
       - name: Install dependencies
         run: |
@@ -119,11 +105,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          
-      - name: Install AJV CLI
-        run: npm install -g ajv-cli
-        
-      - name: Validate schema
-        run: |
-          ajv validate -s schema/scenefile.schema.json --verbose
+          node-version: '24'
+
+      - name: Compile schema
+        run: npx -y -p ajv-cli@5 -p ajv-formats@3 ajv compile -c ajv-formats -s schema/scenefile.schema.json
