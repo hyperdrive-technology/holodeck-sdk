@@ -9,8 +9,12 @@
  *
  * Design rules (see core/docs/EXTENSIONS_AND_LIBRARIES.md):
  * - Duplicate contribution ids within a kind are an error, never an override.
- * - `install` is atomic: validation runs for every kind first, then the
- *   registry mutates. A failed install leaves the registry untouched.
+ * - `install` and pending replay validate everything before publishing state.
+ *   Validation failures leave the registry untouched, including pending IDs.
+ * - Lifecycle hooks and subscribers run after the entire operation commits.
+ *   Callback failures are collected in an AggregateError; state stays committed.
+ * - User objects retain their identity and behavior. Only internal membership,
+ *   routing IDs and bound kind callbacks are captured for registry bookkeeping.
  * - No IEC / Hyperdrive semantics here; this file is domain-neutral.
  */
 
@@ -24,10 +28,11 @@ export interface Contribution {
 export interface ContributionKind<T extends Contribution = Contribution> {
   /** Dotted kind name, e.g. `holodeck.iso.part`. */
   kind: string;
-  /** Structural check run at install time; a failing item rejects the whole install. */
+  /** Check run at install time, or on late registration for pending items. */
   validate?: (item: unknown) => item is T;
-  /** Called after the registry has been updated. */
+  /** Called after the entire operation commits; failures are aggregated without rollback. */
   onInstall?: (items: T[], extensionId: string) => void;
+  /** Called after the entire uninstall commits; failures are aggregated without rollback. */
   onUninstall?: (items: T[], extensionId: string) => void;
 }
 
@@ -72,42 +77,82 @@ export class ContributionRegistryError extends Error {
 
 interface KindSlot {
   def: ContributionKind;
+  kind: string;
+  validate: ((item: unknown) => boolean) | undefined;
+  onInstall: ((items: Contribution[], extensionId: string) => void) | undefined;
+  onUninstall: ((items: Contribution[], extensionId: string) => void) | undefined;
   /** id → item */
   items: Map<string, Contribution>;
   /** id → owning extension */
   owners: Map<string, string>;
 }
 
+interface ContributionEntry {
+  readonly id: string;
+  readonly item: Contribution;
+}
+
+interface ContributionGroup {
+  readonly kind: string;
+  readonly items: readonly ContributionEntry[];
+}
+
+interface ExtensionSlot {
+  readonly ext: HolodeckExtension;
+  readonly id: string;
+  readonly contributions: readonly ContributionGroup[];
+}
+
 export class ContributionRegistry {
   private readonly kinds = new Map<string, KindSlot>();
-  /** extensionId → extension (kept so uninstall and late kind registration can replay) */
-  private readonly extensions = new Map<string, HolodeckExtension>();
+  /** extensionId → original extension with captured routing and membership. */
+  private readonly extensions = new Map<string, ExtensionSlot>();
+  /** kind → (id → owning extension), including kinds that are still pending. */
+  private readonly reservedIds = new Map<string, Map<string, string>>();
   private readonly listeners = new Set<(change: RegistryChange) => void>();
 
-  /** Register a kind this editor can receive. Returns an unregister function. */
+  /** Register a kind, atomically validating pending replay. Returns an unregister function. */
   registerKind<T extends Contribution>(def: ContributionKind<T>): () => void {
-    if (this.kinds.has(def.kind)) {
-      throw new ContributionRegistryError(`kind "${def.kind}" is already registered`, 'DUPLICATE_KIND');
+    // Bind methods to the original definition, including prototype methods and
+    // their instance state. Capture routing separately from the mutable object.
+    const kind = def.kind;
+    if (this.kinds.has(kind)) {
+      throw new ContributionRegistryError(`kind "${kind}" is already registered`, 'DUPLICATE_KIND');
     }
-    const slot: KindSlot = { def: def as unknown as ContributionKind, items: new Map(), owners: new Map() };
-    this.kinds.set(def.kind, slot);
-    this.emit({ type: 'kind-registered', kind: def.kind });
-
-    // Replay contributions of this kind from extensions installed before the
-    // editor mounted (the "pending" case). Validation failures here are thrown
-    // so a bad pack is visible rather than silently dropped.
+    const slot: KindSlot = {
+      def: def as unknown as ContributionKind,
+      kind,
+      validate: def.validate?.bind(def),
+      onInstall: def.onInstall?.bind(def) as KindSlot['onInstall'],
+      onUninstall: def.onUninstall?.bind(def) as KindSlot['onUninstall'],
+      items: new Map(), owners: new Map(),
+    };
+    const replay: Array<[readonly ContributionEntry[], string]> = [];
+    // The slot is private staging state until ALL pending extensions validate.
+    // Neither publishing the kind nor calling hooks is safe inside this loop:
+    // a later invalid extension must leave pending state intact for a retry.
     for (const ext of this.extensions.values()) {
-      const items = ext.contributions[def.kind];
+      const items = ext.contributions.find((group) => group.kind === kind)?.items;
       if (items?.length) {
-        this.validateItems(slot, items, ext.id);
+        this.validateItems(kind, items, ext.id, slot.owners, slot.validate);
         this.commitItems(slot, items, ext.id);
+        replay.push([items, ext.id]);
       }
     }
+    this.kinds.set(kind, slot);
+    // Reservations must describe exactly the replay that was committed, even
+    // after unregister/register cycles. Failed validation never reaches here.
+    if (slot.owners.size) this.reservedIds.set(kind, new Map(slot.owners));
+    else this.reservedIds.delete(kind);
+    this.emit(
+      { type: 'kind-registered', kind },
+      replay.map(([items, extensionId]) => () => slot.onInstall?.(items.map(({ item }) => item), extensionId)),
+    );
 
     return () => {
-      if (this.kinds.get(def.kind) !== slot) return;
-      this.kinds.delete(def.kind);
-      this.emit({ type: 'kind-unregistered', kind: def.kind });
+      if (this.kinds.get(kind) !== slot) return;
+      this.kinds.delete(kind);
+      this.emit({ type: 'kind-unregistered', kind });
     };
   }
 
@@ -115,33 +160,48 @@ export class ContributionRegistry {
     return this.kinds.has(kind);
   }
 
-  /** Install an extension. Atomic: all kinds validate before any mutate. */
+  /** Install an extension. Validation is atomic; callback errors leave the install committed. */
   install(ext: HolodeckExtension): InstallResult {
-    if (this.extensions.has(ext.id)) {
-      throw new ContributionRegistryError(`extension "${ext.id}" is already installed`, 'DUPLICATE_EXTENSION');
+    // Snapshot every kind before validators run: a validator can close over and
+    // mutate the caller's extension, including contributions in a later kind.
+    const snapshot = this.snapshotExtension(ext);
+    const extensionId = snapshot.id;
+    if (this.extensions.has(extensionId)) {
+      throw new ContributionRegistryError(`extension "${extensionId}" is already installed`, 'DUPLICATE_EXTENSION');
     }
-    const routed: Array<[KindSlot, Contribution[]]> = [];
+    const routed: Array<[KindSlot, readonly ContributionEntry[]]> = [];
     const pending: string[] = [];
-    for (const [kind, items] of Object.entries(ext.contributions)) {
+    for (const { kind, items } of snapshot.contributions) {
       const slot = this.kinds.get(kind);
+      // Basic shape and uniqueness apply even without an editor. Only the
+      // kind-specific validator is deferred until that editor registers.
+      this.validateItems(kind, items, extensionId, this.reservedIds.get(kind), slot?.validate, slot?.owners);
       if (!slot) {
         pending.push(kind);
         continue;
       }
-      this.validateItems(slot, items, ext.id);
       routed.push([slot, items]);
     }
 
-    this.extensions.set(ext.id, ext);
-    const installed: Record<string, string[]> = {};
-    for (const [slot, items] of routed) {
-      this.commitItems(slot, items, ext.id);
-      installed[slot.def.kind] = items.map((i) => i.id);
+    this.extensions.set(extensionId, snapshot);
+    for (const { kind, items } of snapshot.contributions) {
+      const owners = this.reservedIds.get(kind) ?? new Map<string, string>();
+      for (const { id } of items) owners.set(id, extensionId);
+      this.reservedIds.set(kind, owners);
     }
-    this.emit({ type: 'installed', extensionId: ext.id, kinds: Object.keys(installed) });
-    return { extensionId: ext.id, installed, pending };
+    const installed: Record<string, string[]> = Object.create(null);
+    for (const [slot, items] of routed) {
+      this.commitItems(slot, items, extensionId);
+      installed[slot.kind] = items.map(({ id }) => id);
+    }
+    this.emit(
+      { type: 'installed', extensionId, kinds: Object.keys(installed) },
+      routed.map(([slot, items]) => () => slot.onInstall?.(items.map(({ item }) => item), extensionId)),
+    );
+    return { extensionId, installed, pending };
   }
 
+  /** Remove an extension completely before callbacks; callback errors do not restore it. */
   uninstall(extensionId: string): void {
     const ext = this.extensions.get(extensionId);
     if (!ext) {
@@ -149,6 +209,7 @@ export class ContributionRegistry {
     }
     this.extensions.delete(extensionId);
     const kinds: string[] = [];
+    const hooks: Array<() => void> = [];
     for (const slot of this.kinds.values()) {
       const removed: Contribution[] = [];
       for (const [id, owner] of slot.owners) {
@@ -159,18 +220,26 @@ export class ContributionRegistry {
         }
       }
       if (removed.length) {
-        kinds.push(slot.def.kind);
-        slot.def.onUninstall?.(removed, extensionId);
+        kinds.push(slot.kind);
+        hooks.push(() => slot.onUninstall?.(removed, extensionId));
       }
     }
-    this.emit({ type: 'uninstalled', extensionId, kinds });
+    for (const [kind, owners] of this.reservedIds) {
+      for (const [id, owner] of owners) {
+        if (owner === extensionId) owners.delete(id);
+      }
+      if (!owners.size) this.reservedIds.delete(kind);
+    }
+    this.emit({ type: 'uninstalled', extensionId, kinds }, hooks);
   }
 
+  /** A fresh array containing the original contribution objects. */
   list<T extends Contribution>(kind: string): readonly T[] {
     const slot = this.kinds.get(kind);
     return slot ? (Array.from(slot.items.values()) as T[]) : [];
   }
 
+  /** The original contribution object, addressed by its ID captured at install. */
   get<T extends Contribution>(kind: string, id: string): T | undefined {
     return this.kinds.get(kind)?.items.get(id) as T | undefined;
   }
@@ -180,17 +249,18 @@ export class ContributionRegistry {
     return this.kinds.get(kind)?.owners.get(id);
   }
 
+  /** A fresh array containing the original extensions; mutations do not change membership. */
   installedExtensions(): readonly HolodeckExtension[] {
-    return Array.from(this.extensions.values());
+    return Array.from(this.extensions.values(), ({ ext }) => ext);
   }
 
   /** Contributions whose kind no editor has registered. */
   pending(): Record<string, Contribution[]> {
-    const out: Record<string, Contribution[]> = {};
+    const out: Record<string, Contribution[]> = Object.create(null);
     for (const ext of this.extensions.values()) {
-      for (const [kind, items] of Object.entries(ext.contributions)) {
+      for (const { kind, items } of ext.contributions) {
         if (!this.kinds.has(kind) && items.length) {
-          (out[kind] ??= []).push(...items);
+          (out[kind] ??= []).push(...items.map(({ item }) => item));
         }
       }
     }
@@ -204,43 +274,76 @@ export class ContributionRegistry {
     };
   }
 
-  private validateItems(slot: KindSlot, items: Contribution[], extensionId: string): void {
+  private snapshotExtension(ext: HolodeckExtension): ExtensionSlot {
+    const id = ext.id;
+    // Freeze only our bookkeeping. User instances must retain their prototypes,
+    // private fields and mutability, while later array/ID edits cannot affect replay.
+    const contributions = Object.entries(ext.contributions).map(([kind, items]) => Object.freeze({
+      kind,
+      items: Object.freeze(items.map((item) => Object.freeze({ id: item?.id, item }))),
+    }));
+    return Object.freeze({ ext, id, contributions: Object.freeze(contributions) });
+  }
+
+  private validateItems(
+    kind: string,
+    items: readonly ContributionEntry[],
+    extensionId: string,
+    owners?: ReadonlyMap<string, string>,
+    validate?: (item: unknown) => boolean,
+    activeOwners?: ReadonlyMap<string, string>,
+  ): void {
     const seen = new Set<string>();
-    for (const item of items) {
-      if (!item || typeof item !== 'object' || typeof (item as Contribution).id !== 'string') {
+    for (const { id, item } of items) {
+      if (!item || typeof item !== 'object' || typeof id !== 'string') {
         throw new ContributionRegistryError(
-          `extension "${extensionId}" has a ${slot.def.kind} contribution without a string id`,
+          `extension "${extensionId}" has a ${kind} contribution without a string id`,
           'INVALID_ITEM',
         );
       }
-      if (seen.has(item.id) || slot.items.has(item.id)) {
-        const owner = slot.owners.get(item.id) ?? extensionId;
+      if (seen.has(id) || owners?.has(id) || activeOwners?.has(id)) {
+        const owner = owners?.get(id) ?? activeOwners?.get(id) ?? extensionId;
         throw new ContributionRegistryError(
-          `${slot.def.kind} "${item.id}" from "${extensionId}" conflicts with "${owner}"`,
+          `${kind} "${id}" from "${extensionId}" conflicts with "${owner}"`,
           'DUPLICATE_ID',
         );
       }
-      const validate = slot.def.validate as ((x: unknown) => boolean) | undefined;
       if (validate && !validate(item)) {
         throw new ContributionRegistryError(
-          `${slot.def.kind} "${item.id}" from "${extensionId}" failed validation`,
+          `${kind} "${id}" from "${extensionId}" failed validation`,
           'INVALID_ITEM',
         );
       }
-      seen.add(item.id);
+      seen.add(id);
     }
   }
 
-  private commitItems(slot: KindSlot, items: Contribution[], extensionId: string): void {
-    for (const item of items) {
-      slot.items.set(item.id, item);
-      slot.owners.set(item.id, extensionId);
+  private commitItems(slot: KindSlot, items: readonly ContributionEntry[], extensionId: string): void {
+    for (const { id, item } of items) {
+      slot.items.set(id, item);
+      slot.owners.set(id, extensionId);
     }
-    slot.def.onInstall?.(items, extensionId);
   }
 
-  private emit(change: RegistryChange): void {
-    for (const l of this.listeners) l(change);
+  private emit(change: RegistryChange, hooks: Array<() => void> = []): void {
+    // Error policy: commit all internal state first, then run every hook and
+    // subscriber, collecting failures. Rollback cannot undo callback side
+    // effects, so an AggregateError reports a COMMITTED operation, not a failed
+    // validation. Callers must inspect state rather than retry that operation.
+    // Snapshot subscribers so a throwing callback cannot prevent delivery to
+    // the others, and subscription changes apply to subsequent notifications.
+    const callbacks = [...hooks, ...Array.from(this.listeners, (listener) => () => listener(change))];
+    const errors: unknown[] = [];
+    for (const callback of callbacks) {
+      try {
+        callback();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length) {
+      throw new AggregateError(errors, `registry ${change.type} committed, but callbacks failed`);
+    }
   }
 }
 
@@ -265,7 +368,8 @@ export function runContributionKindConformance<T extends Contribution>(
     const res = r.install({ id: 'ext.a', version: '1', contributions: { [kindDef.kind]: [a, b] } });
     assert(res.installed[kindDef.kind]?.length === 2, 'install routes both items');
     assert(r.list<T>(kindDef.kind).length === 2, 'list returns installed items');
-    assert(r.get<T>(kindDef.kind, a.id) === a, 'get returns the same object');
+    const installed = r.get<T>(kindDef.kind, a.id);
+    assert(installed === a && installed === r.list<T>(kindDef.kind)[0], 'get and list return the original item');
   }
   // duplicate id rejected and registry untouched
   {

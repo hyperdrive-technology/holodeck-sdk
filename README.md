@@ -145,8 +145,30 @@ registry.install(packToExtension({
 console.log(registry.list(HOLODECK_KINDS.flowPalette));
 ```
 
-Known atomicity limitations are tracked in
-[#6](https://github.com/hyperdrive-technology/holodeck-sdk/issues/6).
+### Registry behaviour
+
+`ContributionRegistry` routes an extension's contributions to registered kinds and
+keeps contributions for unregistered kinds pending. Installation validates each
+item's string `id` and reserves it within its kind, including pending kinds.
+Duplicates within an extension or across installed extensions fail immediately.
+Unregistering a kind retains its reservations; uninstalling an extension releases them.
+
+Kind-specific validation runs at installation for registered kinds and during
+late registration for pending kinds. Installation and registration validate all
+contributions before publishing any state or calling lifecycle hooks. A validation
+failure leaves the registry unchanged. After a failed late registration, remove
+or correct the invalid extension and retry `registerKind()`.
+
+Lifecycle hooks run after the entire operation commits, followed by subscribers.
+Subscribers to `kind-registered` can read all replayed items and their owners.
+If a hook or subscriber throws, the remaining callbacks still run and the method
+throws an `AggregateError` containing all callback failures in execution order.
+The operation remains committed: an install is fully installed, an uninstall is
+fully removed, and a kind registration remains registered even if replay hooks
+fail. Inspect the registry after a callback error; retrying the same install or
+registration will report a duplicate. Callback errors during registration prevent
+the unregister function from being returned. Runtimes must support `AggregateError`.
+
 The contracts and their comments in [`ts/src/`](ts/src/) are the API reference.
 
 ## Scene file format
