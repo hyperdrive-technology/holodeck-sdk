@@ -302,7 +302,7 @@ describe('ContributionRegistry', () => {
       .toThrow(expect.objectContaining({ code: 'DUPLICATE_ID' }));
   });
 
-  it('snapshots extension metadata, kind membership and contribution fields before validation', () => {
+  it('captures routing IDs and membership while preserving original user objects', () => {
     const r = new ContributionRegistry();
     const item = { id: 'original', label: 'Original' };
     const ext: HolodeckExtension = {
@@ -316,14 +316,13 @@ describe('ContributionRegistry', () => {
     ext.contributions['test.part'] = [{ id: 'replacement' }];
     ext.contributions['test.other'] = [{ id: 'other' }];
 
-    expect(r.installedExtensions()).toEqual([{
-      id: 'first', version: '1', contributions: {
-        'test.part': [{ id: 'original', label: 'Original' }],
-      },
-    }]);
-    expect(r.pending()).toEqual({ 'test.part': [{ id: 'original', label: 'Original' }] });
+    expect(r.installedExtensions()[0]).toBe(ext);
+    expect(r.pending()[partKind.kind]![0]).toBe(item);
     const off = r.registerKind(partKind);
-    expect(r.get(partKind.kind, 'original')).toEqual({ id: 'original', label: 'Original' });
+    expect(r.get(partKind.kind, 'original')).toBe(item);
+    expect(r.get(partKind.kind, 'changed')).toBeUndefined();
+    expect(r.ownerOf(partKind.kind, 'original')).toBe('first');
+    expect(r.list('test.other')).toEqual([]);
     off();
     expect(() => r.install({ id: 'duplicate', version: '1', contributions: {
       'test.part': [{ id: 'original' }],
@@ -336,27 +335,38 @@ describe('ContributionRegistry', () => {
     expect(r.ownerOf(partKind.kind, 'original')).toBe('replacement');
   });
 
-  it.each(['active', 'pending'] as const)('protects %s stored snapshots exposed through queries', (state) => {
+  it.each(['active', 'pending'] as const)('isolates %s bookkeeping from mutations through queries', (state) => {
     const r = new ContributionRegistry();
     if (state === 'active') r.registerKind(partKind);
     const original = { id: 'original', label: 'Original' };
-    r.install({ id: 'first', version: '1', contributions: { 'test.part': [original] } });
+    const ext = { id: 'first', version: '1', contributions: { 'test.part': [original] } };
+    r.install(ext);
     const stored = r.installedExtensions()[0]!;
+    expect(stored).toBe(ext);
     const items = stored.contributions[partKind.kind]!;
-    expect(() => { stored.id = 'changed'; }).toThrow(TypeError);
-    expect(() => { stored.contributions[partKind.kind] = []; }).toThrow(TypeError);
-    expect(() => { items.push({ id: 'added' }); }).toThrow(TypeError);
+    stored.id = 'changed';
+    stored.contributions[partKind.kind] = [];
+    items.push({ id: 'added' });
     const exposed = state === 'active' ? r.get<Part>(partKind.kind, original.id)! : r.pending()[partKind.kind]![0]!;
-    expect(() => { exposed.id = 'changed'; }).toThrow(TypeError);
-    expect(() => { (exposed as Part).label = 'Changed'; }).toThrow(TypeError);
-    expect(exposed).not.toBe(original);
+    expect(exposed).toBe(original);
+    exposed.id = 'changed';
+    (exposed as Part).label = 'Changed';
     // Query result arrays themselves can be changed without touching membership.
     if (state === 'active') (r.list(partKind.kind) as Contribution[]).splice(0);
     else r.pending()[partKind.kind]!.splice(0);
     (r.installedExtensions() as HolodeckExtension[]).splice(0);
     if (state === 'pending') r.registerKind(partKind);
     expect(r.list(partKind.kind)).toEqual([original]);
-    expect(r.ownerOf(partKind.kind, original.id)).toBe('first');
+    expect(r.get(partKind.kind, 'original')).toBe(original);
+    expect(r.ownerOf(partKind.kind, 'original')).toBe('first');
+    expect(() => r.install({ id: 'duplicate', version: '1', contributions: {
+      'test.part': [{ id: 'original', label: 'Duplicate' }],
+    } })).toThrow(expect.objectContaining({ code: 'DUPLICATE_ID' }));
+    r.uninstall('first');
+    expect(r.list(partKind.kind)).toEqual([]);
+    r.install({ id: 'replacement', version: '1', contributions: {
+      'test.part': [{ id: 'original', label: 'Replacement' }],
+    } });
   });
 
   it('keeps registered kind definitions stable for validation, hooks and unregister', () => {
@@ -413,7 +423,7 @@ describe('ContributionRegistry', () => {
     } });
     const result = r.install(ext);
     expect(result.extensionId).toBe('first');
-    expect(r.pending()).toEqual({ future: [{ id: 'future' }] });
+    expect(r.pending()).toEqual({ future: [ext.contributions.future[0]] });
     expect(r.ownerOf(partKind.kind, 'part')).toBe('first');
     r.registerKind({ kind: 'future' });
     expect(r.ownerOf('future', 'future')).toBe('first');
@@ -421,20 +431,150 @@ describe('ContributionRegistry', () => {
       .toThrow(expect.objectContaining({ code: 'DUPLICATE_ID' }));
   });
 
-  it('cannot mutate an item during validation or reserve IDs from the rejected install', () => {
+  it('keeps IDs stable when validation mutates an item and rejects the install', () => {
     const r = new ContributionRegistry();
     r.registerKind<Part>({ ...partKind, validate: (item): item is Part => {
       (item as Part).id = 'changed';
-      return true;
+      return false;
     } });
+    const item = { id: 'original', label: 'Original' };
     expect(() => r.install({ id: 'first', version: '1', contributions: {
-      future: [{ id: 'future' }], 'test.part': [tank],
-    } })).toThrow(TypeError);
+      future: [{ id: 'future' }], 'test.part': [item],
+    } })).toThrow(expect.objectContaining({ code: 'INVALID_ITEM' }));
+    expect(item.id).toBe('changed');
     expect(r.installedExtensions()).toEqual([]);
     expect(r.list(partKind.kind)).toEqual([]);
     expect(r.pending()).toEqual({});
     r.install({ id: 'replacement', version: '1', contributions: { future: [{ id: 'future' }] } });
     expect(r.pending()).toEqual({ future: [{ id: 'future' }] });
+  });
+
+  it.each(['active', 'pending'] as const)('preserves %s class kind validators and lifecycle methods', (state) => {
+    class PartKind implements ContributionKind<Part> {
+      kind = 'test.part';
+      #requiredField = 'label';
+      validated: unknown[] = [];
+      installed: Array<{ items: Part[]; extensionId: string }> = [];
+      uninstalled: Array<{ items: Part[]; extensionId: string }> = [];
+
+      validate(item: unknown): item is Part {
+        this.validated.push(item);
+        return typeof (item as Record<string, unknown>)[this.#requiredField] === 'string';
+      }
+
+      onInstall(items: Part[], extensionId: string): void {
+        this.installed.push({ items, extensionId });
+      }
+
+      onUninstall(items: Part[], extensionId: string): void {
+        this.uninstalled.push({ items, extensionId });
+      }
+    }
+
+    const r = new ContributionRegistry();
+    const def = new PartKind();
+    const bad = { id: 'bad', version: '1', contributions: { 'test.part': [{ id: 'invalid' }] } };
+    const good = { id: 'good', version: '1', contributions: { 'test.part': [tank] } };
+    let off: () => void;
+    if (state === 'active') {
+      off = r.registerKind(def);
+      expect(() => r.install(bad)).toThrow(expect.objectContaining({ code: 'INVALID_ITEM' }));
+      r.install(good);
+    } else {
+      r.install(bad);
+      expect(() => r.registerKind(def)).toThrow(expect.objectContaining({ code: 'INVALID_ITEM' }));
+      expect(r.hasKind('test.part')).toBe(false);
+      r.uninstall('bad');
+      r.install(good);
+      off = r.registerKind(def);
+    }
+    expect(def.validated).toEqual([bad.contributions['test.part'][0], tank]);
+    expect(def.installed).toEqual([{ items: [tank], extensionId: 'good' }]);
+    expect(def.installed[0]!.items[0]).toBe(tank);
+    // Replacing contract methods must not change the captured callbacks or name.
+    def.kind = 'changed';
+    def.validate = (_item): _item is Part => true;
+    def.onInstall = vi.fn();
+    def.onUninstall = vi.fn();
+    expect(() => r.install(bad)).toThrow(expect.objectContaining({ code: 'INVALID_ITEM' }));
+    r.uninstall('good');
+    expect(def.uninstalled).toEqual([{ items: [tank], extensionId: 'good' }]);
+    expect(def.uninstalled[0]!.items[0]).toBe(tank);
+    expect(def.onUninstall).not.toHaveBeenCalled();
+    r.install(good);
+    expect(def.installed).toHaveLength(2);
+    expect(def.onInstall).not.toHaveBeenCalled();
+    off();
+    expect(r.hasKind('test.part')).toBe(false);
+    expect(r.pending()['test.part']![0]).toBe(tank);
+  });
+
+  it.each(['active', 'pending'] as const)('preserves %s class animator behavior and identity', (state) => {
+    // Mirrors IsoAnimator / IsoAnimatorContext in Holodeck's
+    // packages/editor-2.5d-react/src/registry/types.ts, with a minimal node fixture.
+    interface AnimatorContext {
+      node: { visible: boolean };
+      value: unknown;
+      dt: number;
+      elapsed: number;
+      settings: Record<string, unknown>;
+    }
+    interface Animator extends Contribution {
+      label: string;
+      param: string;
+      apply(ctx: AnimatorContext): void;
+    }
+    class VisibilityAnimator implements Animator {
+      id = 'visible';
+      param = 'enabled';
+      #applications = 0;
+      get label(): string { return 'Visibility'; }
+      get applications(): number { return this.#applications; }
+      apply({ node, value }: AnimatorContext): void {
+        this.#applications++;
+        node.visible = Boolean(value);
+      }
+    }
+
+    const r = new ContributionRegistry();
+    const kind: ContributionKind<Animator> = {
+      kind: 'holodeck.iso.animator',
+      // The required fields checked by Holodeck's isIsoAnimator validator.
+      validate: (item): item is Animator => {
+        const animator = item as Animator;
+        return typeof animator.id === 'string' && animator.id.length > 0
+          && typeof animator.label === 'string'
+          && typeof animator.param === 'string' && animator.param.length > 0
+          && typeof animator.apply === 'function';
+      },
+      onInstall: vi.fn(),
+      onUninstall: vi.fn(),
+    };
+    const animator = new VisibilityAnimator();
+    const ext = { id: 'animators', version: '1', contributions: { [kind.kind]: [animator] } };
+    let off: () => void;
+    if (state === 'active') off = r.registerKind(kind);
+    r.install(ext);
+    expect(r.installedExtensions()[0]).toBe(ext);
+    if (state === 'pending') {
+      expect(r.pending()[kind.kind]![0]).toBe(animator);
+      off = r.registerKind(kind);
+    }
+    const installed = r.get<Animator>(kind.kind, animator.id)!;
+    expect(installed).toBe(animator);
+    expect(r.list(kind.kind)[0]).toBe(animator);
+    expect(vi.mocked(kind.onInstall!).mock.calls[0]![0][0]).toBe(animator);
+    const node = { visible: false };
+    installed.apply({ node, value: true, dt: 0.1, elapsed: 1, settings: {} });
+    expect(node.visible).toBe(true);
+    expect(animator.applications).toBe(1);
+    off!();
+    expect(r.pending()[kind.kind]![0]).toBe(animator);
+    r.registerKind(kind);
+    expect(r.get(kind.kind, animator.id)).toBe(animator);
+    r.uninstall('animators');
+    expect(vi.mocked(kind.onUninstall!).mock.calls[0]![0][0]).toBe(animator);
+    expect(r.list(kind.kind)).toEqual([]);
   });
 
   it('only replays own contribution kinds, including names inherited by ordinary objects', () => {
