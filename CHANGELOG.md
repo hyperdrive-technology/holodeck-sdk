@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-09-22
 
-First tagged Holodeck SDK release (formerly Starfleet SDK).
+First tagged Holodeck SDK release.
 
 ### Added
 
@@ -22,7 +22,7 @@ First tagged Holodeck SDK release (formerly Starfleet SDK).
 
 ### Changed
 
-- Package renamed **`@starfleet/sdk` → `@holodeck/sdk`**
+- Package name standardized as **`@holodeck/sdk`**
 - Docs, schema `$id`, and GitHub URLs rebranded to Holodeck
 
 ### Removed
