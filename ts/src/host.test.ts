@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { HOLODECK_DOCUMENT_FORMAT, type HolodeckDocument } from './document';
 import { validateEngine, type HolodeckEngine } from './engine';
-import { HolodeckHost, HolodeckHostError } from './host';
+import { HolodeckHost, HolodeckHostError, USER_OWNER } from './host';
 import { HOLODECK_PACKAGE_SCHEMA, defineHolodeckPackage, type HolodeckPackageManifest } from './package';
 import { createSimProvider } from './provider';
 import { ContributionRegistry, type Contribution, type ContributionKind, type HolodeckExtension } from './registry';
@@ -126,10 +126,11 @@ describe('HolodeckHost', () => {
       expect(seen).toEqual(['studio', 'https://cdn.example/holodeck-cloud/0.1.0/assets/models/server.glb']);
       expect(report).toEqual({
         packageId: 'holodeck.cloud',
+        shared: false,
         install: { extensionId: 'holodeck.cloud', installed: {}, pending: ['holodeck.iso.part'] },
         unresolvedEngines: ['holodeck.iso'],
       });
-      expect(host.package('holodeck.cloud')).toEqual({ manifest: manifest(), owner: 'acme.bundle' });
+      expect(host.package('holodeck.cloud')).toEqual({ manifest: manifest(), owners: ['acme.bundle'] });
       host.registerEngine(isoEngine());
       expect(host.registry.list('holodeck.iso.part')).toHaveLength(1);
     });
@@ -232,25 +233,94 @@ describe('HolodeckHost', () => {
       expect(() => host.uninstallPackage('holodeck.cloud')).toThrow(
         expect.objectContaining({ code: 'REQUIRED_BY', details: ['holodeck.aws requires holodeck.cloud'] }),
       );
-      host.uninstallPackage('holodeck.aws');
-      host.uninstallPackage('holodeck.cloud');
+      expect(host.uninstallPackage('holodeck.aws')).toEqual({ removed: ['holodeck.aws'], kept: [] });
+      expect(host.uninstallPackage('holodeck.cloud')).toEqual({ removed: ['holodeck.cloud'], kept: [] });
       expect(host.packages()).toEqual([]);
       expect(() => host.uninstallPackage('holodeck.cloud')).toThrow(expect.objectContaining({ code: 'UNKNOWN_PACKAGE' }));
     });
 
-    it('uninstallOwnedBy removes an owner set dependents-first, or nothing', async () => {
+    it('uninstallOwnedBy removes an owner set dependents-first', async () => {
       const host = new HolodeckHost({ name: 'hyperdrive-ui' });
       const owner = 'acme.extension';
       await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner });
       await host.installPackage(manifest({ id: 'acme.a', requires: { 'holodeck.cloud': '*' } }), ext('acme.a', '0.1.0', {}), { owner });
       await host.installPackage(manifest({ id: 'acme.b', requires: { 'acme.a': '*' } }), ext('acme.b', '0.1.0', {}), { owner });
-      await host.installPackage(manifest({ id: 'user.c', requires: { 'acme.b': '*' } }), ext('user.c', '0.1.0', {}));
-      expect(() => host.uninstallOwnedBy(owner)).toThrow(expect.objectContaining({ code: 'REQUIRED_BY', details: ['user.c requires acme.b'] }));
-      expect(host.packages()).toHaveLength(4);
-      host.uninstallPackage('user.c');
-      expect(host.uninstallOwnedBy(owner)).toEqual(['acme.b', 'acme.a', 'holodeck.cloud']);
+      expect(host.uninstallOwnedBy(owner)).toEqual({ removed: ['acme.b', 'acme.a', 'holodeck.cloud'], kept: [] });
       expect(host.packages()).toEqual([]);
-      expect(host.uninstallOwnedBy('nobody')).toEqual([]);
+      expect(host.uninstallOwnedBy('nobody')).toEqual({ removed: [], kept: [] });
+    });
+
+    it('shares a package between the user and extensions; it leaves with its last owner', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      expect((await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}))).shared).toBe(false);
+      const a = await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.a', range: '^0.1' });
+      expect(a).toEqual({ packageId: 'holodeck.cloud', shared: true, unresolvedEngines: [] });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.b' });
+      expect(host.package('holodeck.cloud')?.owners).toEqual([USER_OWNER, 'ext.a', 'ext.b']);
+      expect(host.uninstallOwnedBy('ext.a')).toEqual({ removed: [], kept: ['holodeck.cloud'] });
+      expect(host.uninstallPackage('holodeck.cloud')).toEqual({ removed: [], kept: ['holodeck.cloud'] });
+      expect(host.registry.installedExtensions().map((e) => e.id)).toEqual(['holodeck.cloud']);
+      expect(host.uninstallOwnedBy('ext.b')).toEqual({ removed: ['holodeck.cloud'], kept: [] });
+      expect(host.registry.installedExtensions()).toEqual([]);
+    });
+
+    it('two extensions embedding the same pair: removing one keeps both packages', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const y = manifest({ id: 'holodeck.y', requires: { 'holodeck.cloud': '^0.1' } });
+      for (const owner of ['ext.a', 'ext.b']) {
+        await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner });
+        await host.installPackage(y, ext('holodeck.y', '0.1.0', {}), { owner });
+      }
+      expect(host.uninstallOwnedBy('ext.a')).toEqual({ removed: [], kept: ['holodeck.cloud', 'holodeck.y'] });
+      expect(host.uninstallOwnedBy('ext.b')).toEqual({ removed: ['holodeck.y', 'holodeck.cloud'], kept: [] });
+    });
+
+    it('keeps an ownerless package alive while an installed package requires it', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.a' });
+      await host.installPackage(manifest({ id: 'user.y', requires: { 'holodeck.cloud': '*' } }), ext('user.y', '0.1.0', {}));
+      expect(host.uninstallOwnedBy('ext.a')).toEqual({ removed: [], kept: ['holodeck.cloud'] });
+      expect(host.package('holodeck.cloud')?.owners).toEqual([]);
+      expect(() => host.uninstallPackage('holodeck.cloud')).toThrow(expect.objectContaining({ code: 'NOT_OWNER' }));
+      expect(host.uninstallPackage('user.y')).toEqual({ removed: ['user.y', 'holodeck.cloud'], kept: [] });
+    });
+
+    it('refuses a user uninstall of a package only extensions own', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.a' });
+      expect(() => host.uninstallPackage('holodeck.cloud')).toThrow(
+        expect.objectContaining({ code: 'NOT_OWNER', details: ['owned by ext.a'] }),
+      );
+    });
+
+    it('reports VERSION_CONFLICT instead of upgrading or installing side by side', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}));
+      const v2 = manifest({ version: '2.1.0' });
+      await expect(host.installPackage(v2, ext('holodeck.cloud', '2.1.0', {}), { owner: 'ext.a', range: '^2.0' })).rejects.toMatchObject({
+        code: 'VERSION_CONFLICT',
+        details: [`holodeck.cloud 0.1.0 is installed (owners: ${USER_OWNER})`, 'ext.a needs holodeck.cloud ^2.0'],
+      });
+      await expect(host.installPackage(v2, ext('holodeck.cloud', '2.1.0', {}), { owner: 'ext.b' })).rejects.toMatchObject({
+        code: 'VERSION_CONFLICT',
+        details: [`holodeck.cloud 0.1.0 is installed (owners: ${USER_OWNER})`, 'ext.b needs holodeck.cloud 2.1.0'],
+      });
+      expect(host.package('holodeck.cloud')?.owners).toEqual([USER_OWNER]);
+      await expect(
+        host.installPackage(manifest({ id: 'holodeck.new' }), ext('holodeck.new', '0.1.0', {}), { owner: 'ext.a', range: '^1.0' }),
+      ).rejects.toMatchObject({ code: 'VERSION_CONFLICT', details: ['ext.a needs holodeck.new ^1.0, offered 0.1.0'] });
+      await expect(host.installPackage(manifest({ id: 'holodeck.new' }), ext('holodeck.new', '0.1.0', {}), { range: 'latest' })).rejects.toMatchObject({
+        code: 'INVALID_MANIFEST',
+      });
+    });
+
+    it('rejects the same owner installing a package twice', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.a' });
+      await expect(host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.a' })).rejects.toMatchObject({
+        code: 'DUPLICATE_PACKAGE',
+        details: ['ext.a already owns holodeck.cloud 0.1.0'],
+      });
     });
 
     it('uninstallOwnedBy finishes the set and reports hook failures together', async () => {

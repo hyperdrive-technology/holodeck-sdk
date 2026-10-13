@@ -159,19 +159,31 @@ await host.installPackage(manifestJson, entryModule, { manifestUrl });
 host.uninstallPackage('holodeck.aws');
 ```
 
-`installPackage` steps. Any failure leaves the host and registry unchanged.
+`installPackage(manifest, source, { owner, range })` steps. Any failure leaves the host and registry unchanged.
 
 1. Validate the manifest → `INVALID_MANIFEST` (all problems listed).
-2. Reject duplicates, including a concurrent install of the same id → `DUPLICATE_PACKAGE`.
+2. If the id is already installed, **share it**. A compatible version (the installed version satisfies
+   `range`, or equals `manifest.version` when no range is given) gains `owner` and returns
+   `{ shared: true }`. Anything else → `VERSION_CONFLICT`, listing the installed version, its owners and
+   the request. There are no silent upgrades and no side-by-side versions. The same owner installing
+   twice, or a concurrent install of the same id → `DUPLICATE_PACKAGE`.
 3. Check `requires` against installed versions → `MISSING_REQUIREMENT`.
 4. Check `engines` against registered engines → `ENGINE_INCOMPATIBLE`. Engines not registered yet are
    reported in `unresolvedEngines`; their kinds wait as `pending` and replay when the engine registers.
 5. `createExtension(ctx)` and compare the result with the manifest → `MANIFEST_MISMATCH`.
 6. `registry.install(ext)`, which is atomic and validates every item against its kind.
 
-Uninstall refuses while another package requires the target (`REQUIRED_BY`). Packages carry an optional
-`owner`. `uninstallOwnedBy(owner)` removes a host product's whole set dependents-first, or nothing; this is
-what makes embedding in host extensions work (§8).
+**Ownership.** Each installed package has a set of owners: `USER_OWNER` for direct installs, and the ids
+of host-product extensions that embed it. A package stays installed while it has an owner **or** an
+installed package requires it. Releasing an owner removes every package left with neither, dependents
+first:
+
+- `uninstallPackage(id)` releases the user's ownership. It throws `NOT_OWNER` if only extensions hold
+  the package, and `REQUIRED_BY` if the release would orphan a package other installed packages require.
+- `uninstallOwnedBy(owner)` releases a host extension's ownership of everything it embedded. It never
+  blocks: packages still held by the user or other extensions, or still required, are reported in `kept`.
+
+Both return `{ removed, kept }`. This is what makes embedding in host extensions work (§8).
 
 Registry semantics (duplicate ids are errors, pending kinds, hooks after commit) are unchanged: see the
 README's "Registry behaviour".
@@ -334,9 +346,19 @@ extension format:
 ```
 Host extension (e.g. a Hyperdrive extension on its marketplace)
 ├── host-specific content (its own manifest, logic libraries, plugins …)
-└── holodeck: { packages: [ "./holodeck" | { npm: "@acme/holodeck-pumps", version: "^1.2.0" } ] }
-                    └── an ordinary holodeck.package.json directory, installable anywhere
+└── holodeck: { packages: [ <reference>, … ] }
+                    └── each resolves to an ordinary holodeck.package.json directory, installable anywhere
 ```
+
+The reference grammar belongs to the host product, not to this SDK. Illustrative forms:
+`"./holodeck"`, `{ "path": "vendor/pumps" }`, `{ "npm": "@acme/holodeck-pumps", "version": "^1.2.0" }`,
+`{ "tarball": "pumps-1.2.3.tgz", "integrity": "sha512-…" }` (air-gapped / OT sites), each with an optional
+`integrity` so a project lockfile can pin exact content. The host resolves a reference to a manifest plus
+entry module, then calls `installPackage(manifest, module, { owner: <extension id>, range })`.
+
+**Integrity and signatures are the host's job, before `installPackage`.** For example, a detached
+`holodeck.package.json.sig` verified against the host's trust store. The manifest has no signature field,
+and unknown manifest fields are rejected.
 
 Rules:
 
@@ -346,9 +368,11 @@ Rules:
 2. **Same unit everywhere.** A Holodeck package installs unchanged into Holodeck Studio, into a host
    product, or from npm. A marketplace lists both pure Holodeck packages and host extensions that embed
    them. `packageRoles` gives the facets.
-3. **Ownership.** The host installs embedded packages with `owner = <host extension id>` and removes them
-   with `uninstallOwnedBy`. A package already installed by the user is shared, not duplicated. The host's
-   `requires` check sees it.
+3. **Ownership.** The host installs embedded packages with `owner = <host extension id>` and the
+   reference's `range`, and removes them with `uninstallOwnedBy`. A package already installed (by the
+   user or another extension) in a compatible version is shared, not duplicated. An incompatible one is
+   a `VERSION_CONFLICT` the host surfaces to the user. Removing one extension never removes a package
+   another owner or an installed requirer still needs (§4).
 4. **Providers are the bridge.** A host product exposes its live data as a `holodeck.provider` (with its own
    `source` syntax and `deploy` if it can run flow documents). Documents bind to it like any other
    provider, so a scene can mix host signals with AWS metrics or flow outputs.

@@ -9,9 +9,14 @@
  *
  * It wraps one `ContributionRegistry` (engines, packages and host products
  * share it) and adds what a bare registry cannot know: package manifests,
- * `requires` between packages, engine API compatibility, and ownership, so a
- * host product can install and remove the Holodeck packages embedded in its
- * own extensions as a unit (`owner`).
+ * `requires` between packages, engine API compatibility, and ownership.
+ *
+ * Ownership: a package has a set of owners: the user (`USER_OWNER`) and/or
+ * host-product extensions that embed it. Installing a package that is already
+ * installed with a compatible version adds an owner instead of installing it
+ * again (`VERSION_CONFLICT` otherwise). A package stays installed while it
+ * has an owner or an installed package requires it; releasing the last owner
+ * removes it and then any package left with neither (dependents first).
  */
 
 import { runDocumentChecks, DOCUMENT_CHECK_KIND, IMPORTER_KIND, type CheckDiagnostic } from './checks.js';
@@ -33,7 +38,7 @@ import {
   type HolodeckExtension,
   type InstallResult,
 } from './registry.js';
-import { satisfiesRange } from './version.js';
+import { isValidRange, satisfiesRange } from './version.js';
 
 export type HolodeckHostErrorCode =
   | 'INVALID_MANIFEST'
@@ -44,7 +49,9 @@ export type HolodeckHostErrorCode =
   | 'INVALID_ENGINE'
   | 'DUPLICATE_ENGINE'
   | 'UNKNOWN_PACKAGE'
-  | 'REQUIRED_BY';
+  | 'REQUIRED_BY'
+  | 'VERSION_CONFLICT'
+  | 'NOT_OWNER';
 
 export class HolodeckHostError extends Error {
   constructor(
@@ -57,15 +64,28 @@ export class HolodeckHostError extends Error {
   }
 }
 
+/**
+ * Owner id for packages the user installed directly. Not a valid dotted id, so
+ * it can never collide with a host-product extension id.
+ */
+export const USER_OWNER = '#user';
+
 export interface InstalledPackage {
   manifest: HolodeckPackageManifest;
-  /** Who installed it, e.g. a host-product extension id. Absent = the user. */
-  owner?: string;
+  /** `USER_OWNER` and/or host-product extension ids, in the order they claimed it. Never empty
+   * unless an installed package requires it (it is then kept alive by that requirement). */
+  owners: readonly string[];
 }
 
 export interface PackageInstallOptions {
-  /** See `InstalledPackage.owner`. */
+  /** Who is installing: a host-product extension id, or `USER_OWNER` (default). */
   owner?: string;
+  /**
+   * The range the owner asked for (e.g. an extension's embedded reference `^2.0`). When the
+   * package is already installed, the installed version must satisfy it; otherwise it must equal
+   * `manifest.version`. A new install checks `manifest.version` against it.
+   */
+  range?: string;
   /** Base URL of the package's `assets` directory. Default: `assets` resolved against `manifestUrl`. */
   assetBase?: string;
   /** URL of the manifest file, used to resolve the default `assetBase`. */
@@ -74,9 +94,19 @@ export interface PackageInstallOptions {
 
 export interface PackageInstallReport {
   packageId: string;
-  install: InstallResult;
+  /** `true` when the package was already installed and the owner was added to it. */
+  shared: boolean;
+  /** Registry result of a fresh install; absent when `shared`. */
+  install?: InstallResult;
   /** Engines named in `engines` that are not registered yet; their kinds wait as `pending`. */
   unresolvedEngines: string[];
+}
+
+export interface PackageRemovalReport {
+  /** Packages removed from the registry, dependents first. */
+  removed: string[];
+  /** Packages the owner released that stay installed (other owners or requirers remain). */
+  kept: string[];
 }
 
 export interface HolodeckHostOptions {
@@ -167,10 +197,11 @@ export class HolodeckHost {
   // ---------------------------------------------------------------------------
 
   /**
-   * Install a package: validate the manifest, check `requires` and engine
-   * ranges, create the extension from the entry module, check it matches the
-   * manifest, then install it into the registry. Nothing is recorded unless
-   * the registry install commits.
+   * Install a package for `options.owner` (default `USER_OWNER`): validate the
+   * manifest, share an already-installed compatible version, or check
+   * `requires` and engine ranges, create the extension from the entry module,
+   * check it matches the manifest, and install it into the registry. Nothing
+   * is recorded unless the registry install commits.
    */
   async installPackage(
     rawManifest: unknown,
@@ -185,9 +216,21 @@ export class HolodeckHost {
       throw new HolodeckHostError('invalid package manifest', 'INVALID_MANIFEST', details);
     }
     const id = manifest.id;
-    if (this.installed.has(id) || this.installing.has(id)) {
-      throw new HolodeckHostError(`package "${id}" is already installed`, 'DUPLICATE_PACKAGE');
+    const owner = options.owner ?? USER_OWNER;
+    if (options.range !== undefined && !isValidRange(options.range)) {
+      throw new HolodeckHostError(`unsupported version range "${options.range}"`, 'INVALID_MANIFEST');
     }
+    if (this.installing.has(id)) {
+      throw new HolodeckHostError(`package "${id}" is being installed`, 'DUPLICATE_PACKAGE');
+    }
+    const existing = this.installed.get(id);
+    if (existing) return this.share(existing, manifest, owner, options.range);
+    if (options.range !== undefined && !satisfiesRange(manifest.version, options.range)) {
+      throw new HolodeckHostError(`package "${id}" does not satisfy the requested range`, 'VERSION_CONFLICT', [
+        `${owner} needs ${id} ${options.range}, offered ${manifest.version}`,
+      ]);
+    }
+
     this.installing.add(id);
     try {
       const missing = Object.entries(manifest.requires ?? {}).flatMap(([dep, range]) => {
@@ -223,7 +266,7 @@ export class HolodeckHost {
         throw new HolodeckHostError(`package "${id}" does not match its manifest`, 'MANIFEST_MISMATCH', mismatch);
       }
 
-      const record: InstalledPackage = options.owner === undefined ? { manifest } : { manifest, owner: options.owner };
+      const record: InstalledPackage = { manifest, owners: [owner] };
       let install: InstallResult;
       try {
         install = this.registry.install(ext);
@@ -233,60 +276,54 @@ export class HolodeckHost {
         throw error;
       }
       this.installed.set(id, record);
-      return { packageId: id, install, unresolvedEngines };
+      return { packageId: id, shared: false, install, unresolvedEngines };
     } finally {
       this.installing.delete(id);
     }
   }
 
-  /** Uninstall one package. Throws `REQUIRED_BY` while other installed packages require it. */
-  uninstallPackage(id: string): void {
-    if (!this.installed.has(id)) throw new HolodeckHostError(`package "${id}" is not installed`, 'UNKNOWN_PACKAGE');
-    const dependents = this.dependentsOf(new Set([id]));
-    if (dependents.length) {
-      throw new HolodeckHostError(`package "${id}" is still required`, 'REQUIRED_BY', dependents);
+  /**
+   * The user's uninstall: release `USER_OWNER` from a package, then remove
+   * everything left without an owner or requirer. Throws `NOT_OWNER` if the
+   * user did not install it (remove the owning extension instead) and
+   * `REQUIRED_BY` if it would lose its last owner while installed packages
+   * still require it. Packages other owners hold are kept (`kept`).
+   */
+  uninstallPackage(id: string): PackageRemovalReport {
+    const pkg = this.installed.get(id);
+    if (!pkg) throw new HolodeckHostError(`package "${id}" is not installed`, 'UNKNOWN_PACKAGE');
+    if (!pkg.owners.includes(USER_OWNER)) {
+      throw new HolodeckHostError(`package "${id}" was not installed by the user`, 'NOT_OWNER', [
+        `owned by ${pkg.owners.join(', ') || 'nobody (kept alive by requirements)'}`,
+      ]);
     }
-    this.removeFromRegistry(id);
+    const remaining = pkg.owners.filter((o) => o !== USER_OWNER);
+    if (!remaining.length) {
+      const requirers = this.requirersOf(id);
+      if (requirers.length) {
+        throw new HolodeckHostError(`package "${id}" is still required`, 'REQUIRED_BY', requirers.map((r) => `${r} requires ${id}`));
+      }
+    }
+    this.installed.set(id, { ...pkg, owners: remaining });
+    const removed = this.collectGarbage();
+    return { removed, kept: removed.includes(id) ? [] : [id] };
   }
 
   /**
-   * Uninstall every package installed with `owner`, dependents first. Checks
-   * up front that no package outside the set requires one inside it, so it
-   * either removes the whole set or nothing. Returns the removed ids in order.
+   * Release `owner` from every package it holds (a host-product extension
+   * being removed), then remove every package left with neither an owner nor
+   * an installed requirer, dependents first. Never blocks: packages the user
+   * or other extensions hold, or that installed packages require, are kept.
    */
-  uninstallOwnedBy(owner: string): string[] {
-    const owned = new Set([...this.installed].filter(([, p]) => p.owner === owner).map(([id]) => id));
-    const outside = this.dependentsOf(owned);
-    if (outside.length) {
-      throw new HolodeckHostError(`packages owned by "${owner}" are still required`, 'REQUIRED_BY', outside);
+  uninstallOwnedBy(owner: string): PackageRemovalReport {
+    const released: string[] = [];
+    for (const [id, pkg] of this.installed) {
+      if (!pkg.owners.includes(owner)) continue;
+      this.installed.set(id, { ...pkg, owners: pkg.owners.filter((o) => o !== owner) });
+      released.push(id);
     }
-    const order: string[] = [];
-    const hookErrors: unknown[] = [];
-    const remaining = new Set(owned);
-    while (remaining.size) {
-      // Remove packages no remaining package requires. `requires` form a DAG
-      // (a package can only require packages installed before it), so there
-      // is always at least one leaf.
-      const leaves = [...remaining].filter(
-        (id) => ![...remaining].some((other) => other !== id && this.installed.get(other)?.manifest.requires?.[id]),
-      );
-      if (!leaves.length) throw new Error(`uninstallOwnedBy("${owner}"): requires cycle among ${[...remaining].join(', ')}`);
-      for (const id of leaves) {
-        try {
-          this.removeFromRegistry(id);
-        } catch (error) {
-          // Hook errors after a committed uninstall: keep going, report at the end.
-          if (this.installed.has(id)) throw error;
-          hookErrors.push(error);
-        }
-        remaining.delete(id);
-        order.push(id);
-      }
-    }
-    if (hookErrors.length) {
-      throw new AggregateError(hookErrors, `packages owned by "${owner}" were removed, but uninstall hooks failed`);
-    }
-    return order;
+    const removed = this.collectGarbage();
+    return { removed, kept: released.filter((id) => !removed.includes(id)) };
   }
 
   packages(): InstalledPackage[] {
@@ -343,14 +380,59 @@ export class HolodeckHost {
     };
   }
 
-  /** Installed packages outside `ids` that require something in `ids`, as "a requires b" strings. */
-  private dependentsOf(ids: ReadonlySet<string>): string[] {
-    const out: string[] = [];
-    for (const [id, { manifest }] of this.installed) {
-      if (ids.has(id)) continue;
-      for (const dep of Object.keys(manifest.requires ?? {})) if (ids.has(dep)) out.push(`${id} requires ${dep}`);
+  /** Add `owner` to an installed package if its version is compatible. */
+  private share(
+    existing: InstalledPackage,
+    manifest: HolodeckPackageManifest,
+    owner: string,
+    range: string | undefined,
+  ): PackageInstallReport {
+    const id = manifest.id;
+    if (existing.owners.includes(owner)) {
+      throw new HolodeckHostError(`package "${id}" is already installed`, 'DUPLICATE_PACKAGE', [
+        `${owner === USER_OWNER ? 'the user' : owner} already owns ${id} ${existing.manifest.version}`,
+      ]);
     }
-    return out;
+    const have = existing.manifest.version;
+    const compatible = range !== undefined ? satisfiesRange(have, range) : have === manifest.version;
+    if (!compatible) {
+      throw new HolodeckHostError(`package "${id}" is installed in an incompatible version`, 'VERSION_CONFLICT', [
+        `${id} ${have} is installed (owners: ${existing.owners.join(', ') || 'none'})`,
+        `${owner} needs ${id} ${range ?? manifest.version}`,
+      ]);
+    }
+    this.installed.set(id, { ...existing, owners: [...existing.owners, owner] });
+    return { packageId: id, shared: true, unresolvedEngines: [] };
+  }
+
+  /** Installed packages that require `id`. */
+  private requirersOf(id: string): string[] {
+    return [...this.installed].filter(([, p]) => p.manifest.requires?.[id] !== undefined).map(([other]) => other);
+  }
+
+  /**
+   * Remove packages with no owner and no installed requirer, repeatedly, so
+   * dependents go before what they require. Hook errors after a committed
+   * uninstall do not stop the sweep; they are thrown together at the end.
+   */
+  private collectGarbage(): string[] {
+    const removed: string[] = [];
+    const hookErrors: unknown[] = [];
+    for (;;) {
+      const orphan = [...this.installed].find(([id, p]) => !p.owners.length && !this.requirersOf(id).length)?.[0];
+      if (orphan === undefined) break;
+      try {
+        this.removeFromRegistry(orphan);
+      } catch (error) {
+        if (this.installed.has(orphan)) throw error;
+        hookErrors.push(error);
+      }
+      removed.push(orphan);
+    }
+    if (hookErrors.length) {
+      throw new AggregateError(hookErrors, `packages ${removed.join(', ')} were removed, but uninstall hooks failed`);
+    }
+    return removed;
   }
 
   private removeFromRegistry(id: string): void {
