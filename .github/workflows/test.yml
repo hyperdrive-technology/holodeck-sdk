@@ -2,91 +2,61 @@ name: Test
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-typescript:
-    name: Test TypeScript
+    name: Test TypeScript (node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
-    
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [18, 20, 21]
-    
+        # package.json engines is >=18; test the current LTS lines. 26 is what the
+        # holodeck repo CI uses, so the SDK is exercised on the same runtime.
+        node-version: [24, 26]
+    defaults:
+      run:
+        working-directory: ts
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+
+      # pnpm 10.26+ is required: ts/pnpm-workspace.yaml uses `allowBuilds`
+      # (older pnpm rejects the file with "packages field missing or empty").
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
+
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
-          
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v2
-        with:
-          version: 8
-          
-      - name: Install dependencies
-        run: |
-          cd ts
-          pnpm install --frozen-lockfile
-          
-      - name: Lint
-        run: |
-          cd ts
-          pnpm lint
-          
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
       - name: Type check
-        run: |
-          cd ts
-          pnpm type-check
-          
-      - name: Build
-        run: |
-          cd ts
-          pnpm build
-          
+        run: pnpm type-check
       - name: Test
-        run: |
-          cd ts
-          pnpm test
-          
-      - name: Test coverage
-        run: |
-          cd ts
-          pnpm test:coverage
-          
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v3
-        with:
-          files: ./ts/coverage/lcov.info
-          flags: typescript
-          name: typescript-${{ matrix.node-version }}
+        run: pnpm exec vitest run
+      - name: Build
+        run: pnpm build
+      # Lint is not run: there is no ESLint config in ts/ yet (eslint 8 exits 2 with
+      # "no configuration found"). Add an eslint.config.js and a step here when ready.
 
   validate-schema:
     name: Validate JSON Schema
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          
-      - name: Install AJV CLI
-        run: npm install -g ajv-cli
-        
-      - name: Validate schema syntax
-        run: |
-          ajv validate -s schema/scenefile.schema.json --verbose
-          
-      - name: Test schema against examples
-        run: |
-          # Add validation against example files when they exist
-          echo "Schema validation passed"
+          node-version: 24
+      # `ajv validate` needs -d data; `compile` checks the schema itself.
+      # ajv-formats is needed for "date-time" etc. (strict mode rejects unknown formats).
+      - name: Compile schema
+        run: npx -y -p ajv-cli@5 -p ajv-formats@3 ajv compile -c ajv-formats -s schema/scenefile.schema.json
