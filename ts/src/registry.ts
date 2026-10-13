@@ -13,6 +13,8 @@
  *   Validation failures leave the registry untouched, including pending IDs.
  * - Lifecycle hooks and subscribers run after the entire operation commits.
  *   Callback failures are collected in an AggregateError; state stays committed.
+ * - Installed extensions, contribution records and kind definitions are frozen
+ *   shallow snapshots. Nested payloads (such as components) retain their identity.
  * - No IEC / Hyperdrive semantics here; this file is domain-neutral.
  */
 
@@ -83,7 +85,7 @@ interface KindSlot {
 
 export class ContributionRegistry {
   private readonly kinds = new Map<string, KindSlot>();
-  /** extensionId → extension (kept so uninstall and late kind registration can replay) */
+  /** extensionId → frozen snapshot (kept so uninstall and late registration can replay) */
   private readonly extensions = new Map<string, HolodeckExtension>();
   /** kind → (id → owning extension), including kinds that are still pending. */
   private readonly reservedIds = new Map<string, Map<string, string>>();
@@ -91,6 +93,9 @@ export class ContributionRegistry {
 
   /** Register a kind, atomically validating pending replay. Returns an unregister function. */
   registerKind<T extends Contribution>(def: ContributionKind<T>): () => void {
+    // Capture the name, validator and hooks together; caller mutations must not
+    // change routing or make the returned unregister function target another kind.
+    def = Object.freeze({ ...def });
     if (this.kinds.has(def.kind)) {
       throw new ContributionRegistryError(`kind "${def.kind}" is already registered`, 'DUPLICATE_KIND');
     }
@@ -108,9 +113,13 @@ export class ContributionRegistry {
       }
     }
     this.kinds.set(def.kind, slot);
+    // Reservations must describe exactly the replay that was committed, even
+    // after unregister/register cycles. Failed validation never reaches here.
+    if (slot.owners.size) this.reservedIds.set(def.kind, new Map(slot.owners));
+    else this.reservedIds.delete(def.kind);
     this.emit(
       { type: 'kind-registered', kind: def.kind },
-      replay.map(([items, extensionId]) => () => slot.def.onInstall?.(items, extensionId)),
+      replay.map(([items, extensionId]) => () => slot.def.onInstall?.([...items], extensionId)),
     );
 
     return () => {
@@ -126,6 +135,9 @@ export class ContributionRegistry {
 
   /** Install an extension. Validation is atomic; callback errors leave the install committed. */
   install(ext: HolodeckExtension): InstallResult {
+    // Snapshot every kind before validators run: a validator can close over and
+    // mutate the caller's extension, including contributions in a later kind.
+    ext = this.snapshotExtension(ext);
     if (this.extensions.has(ext.id)) {
       throw new ContributionRegistryError(`extension "${ext.id}" is already installed`, 'DUPLICATE_EXTENSION');
     }
@@ -135,7 +147,7 @@ export class ContributionRegistry {
       const slot = this.kinds.get(kind);
       // Basic shape and uniqueness apply even without an editor. Only the
       // kind-specific validator is deferred until that editor registers.
-      this.validateItems(kind, items, ext.id, this.reservedIds.get(kind), slot?.def.validate);
+      this.validateItems(kind, items, ext.id, this.reservedIds.get(kind), slot?.def.validate, slot?.owners);
       if (!slot) {
         pending.push(kind);
         continue;
@@ -149,14 +161,14 @@ export class ContributionRegistry {
       for (const item of items) owners.set(item.id, ext.id);
       this.reservedIds.set(kind, owners);
     }
-    const installed: Record<string, string[]> = {};
+    const installed: Record<string, string[]> = Object.create(null);
     for (const [slot, items] of routed) {
       this.commitItems(slot, items, ext.id);
       installed[slot.def.kind] = items.map((i) => i.id);
     }
     this.emit(
       { type: 'installed', extensionId: ext.id, kinds: Object.keys(installed) },
-      routed.map(([slot, items]) => () => slot.def.onInstall?.(items, ext.id)),
+      routed.map(([slot, items]) => () => slot.def.onInstall?.([...items], ext.id)),
     );
     return { extensionId: ext.id, installed, pending };
   }
@@ -193,11 +205,13 @@ export class ContributionRegistry {
     this.emit({ type: 'uninstalled', extensionId, kinds }, hooks);
   }
 
+  /** A fresh array of the frozen shallow contribution snapshots. */
   list<T extends Contribution>(kind: string): readonly T[] {
     const slot = this.kinds.get(kind);
     return slot ? (Array.from(slot.items.values()) as T[]) : [];
   }
 
+  /** The frozen shallow contribution snapshot, rather than the caller's object. */
   get<T extends Contribution>(kind: string, id: string): T | undefined {
     return this.kinds.get(kind)?.items.get(id) as T | undefined;
   }
@@ -207,13 +221,14 @@ export class ContributionRegistry {
     return this.kinds.get(kind)?.owners.get(id);
   }
 
+  /** A fresh array of frozen extension snapshots, including membership arrays. */
   installedExtensions(): readonly HolodeckExtension[] {
     return Array.from(this.extensions.values());
   }
 
   /** Contributions whose kind no editor has registered. */
   pending(): Record<string, Contribution[]> {
-    const out: Record<string, Contribution[]> = {};
+    const out: Record<string, Contribution[]> = Object.create(null);
     for (const ext of this.extensions.values()) {
       for (const [kind, items] of Object.entries(ext.contributions)) {
         if (!this.kinds.has(kind) && items.length) {
@@ -231,12 +246,32 @@ export class ContributionRegistry {
     };
   }
 
+  private snapshotExtension(ext: HolodeckExtension): HolodeckExtension {
+    const snapshot = { ...ext };
+    // A null prototype keeps arbitrary kind names from resolving inherited
+    // properties during replay (for example, a kind named "constructor").
+    const contributions: Record<string, Contribution[]> = Object.create(null);
+    for (const [kind, items] of Object.entries(snapshot.contributions)) {
+      const copies = items.map((item) =>
+        item && typeof item === 'object' ? Object.freeze({ ...item }) : item,
+      );
+      // Leave malformed items for validateItems to reject with INVALID_ITEM.
+      // Copy and freeze records too, so changing an ID cannot desynchronise the
+      // item, ownership and reservation maps through input or query references.
+      Object.freeze(copies);
+      contributions[kind] = copies;
+    }
+    snapshot.contributions = Object.freeze(contributions);
+    return Object.freeze(snapshot);
+  }
+
   private validateItems(
     kind: string,
     items: Contribution[],
     extensionId: string,
     owners?: ReadonlyMap<string, string>,
     validate?: (item: unknown) => boolean,
+    activeOwners?: ReadonlyMap<string, string>,
   ): void {
     const seen = new Set<string>();
     for (const item of items) {
@@ -246,8 +281,8 @@ export class ContributionRegistry {
           'INVALID_ITEM',
         );
       }
-      if (seen.has(item.id) || owners?.has(item.id)) {
-        const owner = owners?.get(item.id) ?? extensionId;
+      if (seen.has(item.id) || owners?.has(item.id) || activeOwners?.has(item.id)) {
+        const owner = owners?.get(item.id) ?? activeOwners?.get(item.id) ?? extensionId;
         throw new ContributionRegistryError(
           `${kind} "${item.id}" from "${extensionId}" conflicts with "${owner}"`,
           'DUPLICATE_ID',
@@ -313,7 +348,8 @@ export function runContributionKindConformance<T extends Contribution>(
     const res = r.install({ id: 'ext.a', version: '1', contributions: { [kindDef.kind]: [a, b] } });
     assert(res.installed[kindDef.kind]?.length === 2, 'install routes both items');
     assert(r.list<T>(kindDef.kind).length === 2, 'list returns installed items');
-    assert(r.get<T>(kindDef.kind, a.id) === a, 'get returns the same object');
+    const installed = r.get<T>(kindDef.kind, a.id);
+    assert(installed?.id === a.id && installed === r.list<T>(kindDef.kind)[0], 'get returns the listed snapshot');
   }
   // duplicate id rejected and registry untouched
   {

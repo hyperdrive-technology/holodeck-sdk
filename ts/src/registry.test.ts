@@ -278,6 +278,188 @@ describe('ContributionRegistry', () => {
     expect(r.list(partKind.kind)).toEqual([tank, valve]);
   });
 
+  it('snapshots pending membership before the review append/replay/install/uninstall sequence', () => {
+    const r = new ContributionRegistry();
+    const original = { id: 'original' };
+    const added = { id: 'added' };
+    const ext = { id: 'first', version: '1', contributions: { part: [original] } };
+    r.install(ext);
+    ext.contributions.part.push(added);
+    r.registerKind({ kind: 'part' });
+    const replayed = r.list('part');
+    const replayedOwner = r.ownerOf('part', added.id);
+
+    r.install({ id: 'second', version: '1', contributions: { part: [added] } });
+    expect(r.ownerOf('part', added.id)).toBe('second');
+    r.uninstall('second');
+
+    // The append was never installed, so replay cannot publish an unreserved ID.
+    expect(replayed).toEqual([original]);
+    expect(replayedOwner).toBeUndefined();
+    expect(r.list('part')).toEqual([original]);
+    expect(r.ownerOf('part', original.id)).toBe('first');
+    expect(() => r.install({ id: 'duplicate', version: '1', contributions: { part: [original] } }))
+      .toThrow(expect.objectContaining({ code: 'DUPLICATE_ID' }));
+  });
+
+  it('snapshots extension metadata, kind membership and contribution fields before validation', () => {
+    const r = new ContributionRegistry();
+    const item = { id: 'original', label: 'Original' };
+    const ext: HolodeckExtension = {
+      id: 'first', version: '1', contributions: { 'test.part': [item] },
+    };
+    r.install(ext);
+    ext.id = 'changed';
+    ext.version = '2';
+    item.id = 'changed';
+    item.label = 'Changed';
+    ext.contributions['test.part'] = [{ id: 'replacement' }];
+    ext.contributions['test.other'] = [{ id: 'other' }];
+
+    expect(r.installedExtensions()).toEqual([{
+      id: 'first', version: '1', contributions: {
+        'test.part': [{ id: 'original', label: 'Original' }],
+      },
+    }]);
+    expect(r.pending()).toEqual({ 'test.part': [{ id: 'original', label: 'Original' }] });
+    const off = r.registerKind(partKind);
+    expect(r.get(partKind.kind, 'original')).toEqual({ id: 'original', label: 'Original' });
+    off();
+    expect(() => r.install({ id: 'duplicate', version: '1', contributions: {
+      'test.part': [{ id: 'original' }],
+    } })).toThrow(expect.objectContaining({ code: 'DUPLICATE_ID' }));
+    r.uninstall('first');
+    r.install({ id: 'replacement', version: '1', contributions: {
+      'test.part': [{ id: 'original', label: 'Replacement' }],
+    } });
+    r.registerKind(partKind);
+    expect(r.ownerOf(partKind.kind, 'original')).toBe('replacement');
+  });
+
+  it.each(['active', 'pending'] as const)('protects %s stored snapshots exposed through queries', (state) => {
+    const r = new ContributionRegistry();
+    if (state === 'active') r.registerKind(partKind);
+    const original = { id: 'original', label: 'Original' };
+    r.install({ id: 'first', version: '1', contributions: { 'test.part': [original] } });
+    const stored = r.installedExtensions()[0]!;
+    const items = stored.contributions[partKind.kind]!;
+    expect(() => { stored.id = 'changed'; }).toThrow(TypeError);
+    expect(() => { stored.contributions[partKind.kind] = []; }).toThrow(TypeError);
+    expect(() => { items.push({ id: 'added' }); }).toThrow(TypeError);
+    const exposed = state === 'active' ? r.get<Part>(partKind.kind, original.id)! : r.pending()[partKind.kind]![0]!;
+    expect(() => { exposed.id = 'changed'; }).toThrow(TypeError);
+    expect(() => { (exposed as Part).label = 'Changed'; }).toThrow(TypeError);
+    expect(exposed).not.toBe(original);
+    // Query result arrays themselves can be changed without touching membership.
+    if (state === 'active') (r.list(partKind.kind) as Contribution[]).splice(0);
+    else r.pending()[partKind.kind]!.splice(0);
+    (r.installedExtensions() as HolodeckExtension[]).splice(0);
+    if (state === 'pending') r.registerKind(partKind);
+    expect(r.list(partKind.kind)).toEqual([original]);
+    expect(r.ownerOf(partKind.kind, original.id)).toBe('first');
+  });
+
+  it('keeps registered kind definitions stable for validation, hooks and unregister', () => {
+    const r = new ContributionRegistry();
+    const onInstall = vi.fn();
+    const def = { ...partKind, onInstall };
+    const off = r.registerKind(def);
+    def.kind = 'changed';
+    def.validate = (_item): _item is Part => true;
+    def.onInstall = vi.fn();
+    expect(() => r.install({ id: 'bad', version: '1', contributions: {
+      'test.part': [{ id: 'invalid' }],
+    } })).toThrow(expect.objectContaining({ code: 'INVALID_ITEM' }));
+    expect(r.install({ id: 'good', version: '1', contributions: { 'test.part': [tank] } }).installed)
+      .toEqual({ 'test.part': [tank.id] });
+    expect(onInstall).toHaveBeenCalledWith([tank], 'good');
+    expect(def.onInstall).not.toHaveBeenCalled();
+    off();
+    expect(r.hasKind(partKind.kind)).toBe(false);
+    expect(r.pending()).toEqual({ 'test.part': [tank] });
+  });
+
+  it.each(['active', 'pending'] as const)('isolates %s hook array mutations from stored membership', (state) => {
+    const r = new ContributionRegistry();
+    const onInstall = vi.fn((items: Contribution[]) => {
+      items.splice(0, items.length, { id: 'added' });
+    });
+    let off: () => void;
+    if (state === 'active') off = r.registerKind({ ...partKind, onInstall });
+    r.install({ id: 'first', version: '1', contributions: { 'test.part': [tank] } });
+    if (state === 'pending') off = r.registerKind({ ...partKind, onInstall });
+    expect(onInstall).toHaveBeenCalledTimes(1);
+    expect(r.list(partKind.kind)).toEqual([tank]);
+    expect(() => r.install({ id: 'duplicate', version: '1', contributions: { 'test.part': [tank] } }))
+      .toThrow(expect.objectContaining({ code: 'DUPLICATE_ID' }));
+    off!();
+    expect(r.pending()).toEqual({ 'test.part': [tank] });
+    r.registerKind(partKind);
+    expect(r.list(partKind.kind)).toEqual([tank]);
+    r.uninstall('first');
+    expect(r.list(partKind.kind)).toEqual([]);
+  });
+
+  it('uses one snapshot when a validator mutates later input kinds', () => {
+    const r = new ContributionRegistry();
+    const ext = { id: 'first', version: '1', contributions: {
+      'test.part': [{ id: 'part', label: 'Part' }], future: [{ id: 'future' }],
+    } };
+    r.registerKind<Part>({ ...partKind, validate: (_item): _item is Part => {
+      ext.id = 'changed';
+      ext.contributions.future[0]!.id = 'changed';
+      ext.contributions.future.push({ id: 'added' });
+      return true;
+    } });
+    const result = r.install(ext);
+    expect(result.extensionId).toBe('first');
+    expect(r.pending()).toEqual({ future: [{ id: 'future' }] });
+    expect(r.ownerOf(partKind.kind, 'part')).toBe('first');
+    r.registerKind({ kind: 'future' });
+    expect(r.ownerOf('future', 'future')).toBe('first');
+    expect(() => r.install({ id: 'duplicate', version: '1', contributions: { future: [{ id: 'future' }] } }))
+      .toThrow(expect.objectContaining({ code: 'DUPLICATE_ID' }));
+  });
+
+  it('cannot mutate an item during validation or reserve IDs from the rejected install', () => {
+    const r = new ContributionRegistry();
+    r.registerKind<Part>({ ...partKind, validate: (item): item is Part => {
+      (item as Part).id = 'changed';
+      return true;
+    } });
+    expect(() => r.install({ id: 'first', version: '1', contributions: {
+      future: [{ id: 'future' }], 'test.part': [tank],
+    } })).toThrow(TypeError);
+    expect(r.installedExtensions()).toEqual([]);
+    expect(r.list(partKind.kind)).toEqual([]);
+    expect(r.pending()).toEqual({});
+    r.install({ id: 'replacement', version: '1', contributions: { future: [{ id: 'future' }] } });
+    expect(r.pending()).toEqual({ future: [{ id: 'future' }] });
+  });
+
+  it('only replays own contribution kinds, including names inherited by ordinary objects', () => {
+    const r = new ContributionRegistry();
+    r.install({ id: 'empty', version: '1', contributions: {} });
+    const off = r.registerKind({ kind: 'constructor' });
+    expect(r.list('constructor')).toEqual([]);
+    off();
+    const contributions = Object.fromEntries([
+      ['constructor', [{ id: 'constructor-item' }]],
+      ['__proto__', [{ id: 'prototype-item' }]],
+    ]);
+    r.install({ id: 'first', version: '1', contributions });
+    expect(r.pending()).toEqual(contributions);
+    r.registerKind({ kind: 'constructor' });
+    r.registerKind({ kind: '__proto__' });
+    expect(r.ownerOf('constructor', 'constructor-item')).toBe('first');
+    expect(r.ownerOf('__proto__', 'prototype-item')).toBe('first');
+    r.uninstall('first');
+    const result = r.install({ id: 'replacement', version: '1', contributions });
+    expect(Object.keys(result.installed)).toEqual(['constructor', '__proto__']);
+    expect(result.installed['__proto__']).toEqual(['prototype-item']);
+    expect(r.ownerOf('__proto__', 'prototype-item')).toBe('replacement');
+  });
+
   it.each([null, 42, {}, { id: 42 }])('rejects malformed pending contributions: %j', (item) => {
     const r = new ContributionRegistry();
     expect(() => r.install({ id: 'bad', version: '1', contributions: {
