@@ -1,387 +1,192 @@
 # Holodeck SDK
 
-> **Foundation interfaces and types for the Holodeck ecosystem** - A MIT-licensed contract for building importers, providers, and plugins.
+Holodeck SDK provides the shared TypeScript scene types, JSON Schema, extension
+contracts, and contribution registry for [Holodeck](https://github.com/hyperdrive-technology/holodeck).
+Importers, live data providers, editors, and viewers use these contracts to
+exchange scenes and install extensions without depending on one editor.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/hyperdrive-technology/holodeck-sdk/actions/workflows/test.yml/badge.svg)](https://github.com/hyperdrive-technology/holodeck-sdk/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Overview
+## Project status
 
-The Holodeck SDK provides **TypeScript** interfaces and JSON Schema for the Holodeck ecosystem — importers, providers, and browser React viewers. **Product policy:** Rust for native services, TypeScript in the browser for HMI; see [LANGUAGE_POLICY.md](../LANGUAGE_POLICY.md).
+As of 2026-10-14, the current milestone is
+[M1 — Brewery on WASM](https://github.com/hyperdrive-technology/holodeck-sdk/milestone/1).
+The SDK has scene types and utilities, importer/provider and editor/viewer
+contracts, a contribution registry, and a JSON Schema. CI checks types, runs
+TypeScript tests, builds the package, and compiles the schema.
 
-Holodeck is a platform for interactive infrastructure visualization with live Hyperdrive data.
+The brewery demo currently runs on a TypeScript interpreter in
+[Hyperdrive core](https://github.com/hyperdrive-technology/core) (currently private).
+M1 replaces that path with the real Rust runtime compiled to WASM in the browser
+and consumes Holodeck as built packages. The SDK's immediate work is
+[registry atomicity (#6)](https://github.com/hyperdrive-technology/holodeck-sdk/issues/6):
+pending-kind replay and throwing lifecycle hooks must leave consistent state.
+Package integration is also tracked in
+[Holodeck #7](https://github.com/hyperdrive-technology/holodeck/issues/7) and
+[core #34](https://github.com/hyperdrive-technology/core/issues/34).
 
-## Features
+Next is [M2 — Holodeck standalone scene builder](https://github.com/hyperdrive-technology/holodeck-sdk/milestone/2),
+with shared scene and extension contracts for a standalone editor.
+See [open issues](https://github.com/hyperdrive-technology/holodeck-sdk/issues)
+and [good first issues](https://github.com/hyperdrive-technology/holodeck-sdk/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22).
 
-- **Type-safe contracts** — TypeScript interfaces + JSON Schema
-- **Plugin architecture** — Importer, Provider, AnimationHook interfaces
-- **3D scene modeling** — Scene graph with nodes, edges, transforms, materials
-- **Live data integration** — Real-time metrics via provider plugins
+## Quick start
 
-## Packages
-
-| Artifact | Location | Description |
-|----------|----------|-------------|
-| TypeScript | [`@holodeck/sdk`](./ts/) | Core types and plugin interfaces |
-| JSON Schema | [`schema/scenefile.schema.json`](./schema/scenefile.schema.json) | Validation for any toolchain |
-
-## Core Concepts
-
-### Scene Structure
-- **SceneFile**: Top-level container with metadata and scene graph
-- **SceneNode**: Individual elements (servers, databases, containers, etc.)
-- **SceneEdge**: Connections and relationships between nodes
-- **Transform**: 3D positioning, rotation, and scale
-- **Material**: PBR materials with colors, textures, and properties
-
-### Plugin Architecture
-- **Importer**: Transform external data sources (Terraform, K8s, etc.) into SceneFiles
-- **Provider**: Supply live data and metrics to scene nodes (Prometheus, Datadog, etc.)
-- **AnimationHook**: Custom animation behaviors for scene elements
-
-## Quick Start
-
-### TypeScript
+Use **Node 26** ([`.node-version`](.node-version)) and **pnpm 10.33.2** to match
+CI. pnpm 10.26 or newer is required for the workspace's `allowBuilds` setting.
 
 ```bash
-npm install @holodeck/sdk
+git clone https://github.com/hyperdrive-technology/holodeck-sdk.git
+cd holodeck-sdk/ts
+pnpm install --frozen-lockfile
+pnpm type-check
+pnpm exec vitest run
+pnpm build
 ```
+
+The package builds to `ts/dist/` with CommonJS, ES module, and declaration
+outputs. There is no package at the repository root and no sibling checkout
+is needed for SDK development. The related Holodeck checkout currently uses
+sibling `file:` dependencies; see its
+[setup guide](https://github.com/hyperdrive-technology/holodeck/blob/main/CONTRIBUTING.md).
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for focused tests, the JSON Schema check,
+and how local commands map to CI.
+
+## Repository map
+
+| Path | Purpose |
+| --- | --- |
+| [`ts/src/index.ts`](ts/src/index.ts) | Scene types, importer/provider contracts, extension adapters, and utilities; package entry point |
+| [`ts/src/registry.ts`](ts/src/registry.ts) | `ContributionRegistry`, extension routing, and known contribution kinds |
+| [`ts/src/index.test.ts`](ts/src/index.test.ts), [`ts/src/registry.test.ts`](ts/src/registry.test.ts) | Colocated unit tests |
+| [`ts/package.json`](ts/package.json), [`ts/pnpm-lock.yaml`](ts/pnpm-lock.yaml) | Package scripts, dependencies, and lockfile |
+| [`schema/scenefile.schema.json`](schema/scenefile.schema.json) | JSON Schema for the scene interchange format |
+| [`examples/README.md`](examples/README.md) | Pointers to SDK usage examples |
+| [`.github/workflows/test.yml`](.github/workflows/test.yml) | Pull request and `main` checks |
+| [`.github/workflows/publish.yml`](.github/workflows/publish.yml) | Tag-triggered package release workflow |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history |
+
+## Core concepts
+
+- **SceneFile** is the container for metadata, scene graph, assets, and extensions.
+- **SceneNode** and **SceneEdge** describe elements and connections; transforms,
+  geometry, and materials describe their appearance.
+- **Importer** converts external data into a `SceneFile`.
+- **Provider** supplies live metrics and manages connection lifecycle.
+- **AnimationHook** defines optional frame, node, edge, and lifecycle callbacks.
+- **SceneComponentPack** supplies palette entries, node/edge components, and 3D renderers.
+- **SceneEditorAdapter** and **SceneViewerAdapter** connect another editor or viewer
+  to the same `SceneFile` interchange format.
+- **ContributionRegistry** routes extension contributions to registered kinds
+  and keeps contributions for unregistered kinds pending.
+
+The SDK is domain-neutral. Hosts supply PLC bindings and runtime behavior.
+See the [extension architecture](https://github.com/hyperdrive-technology/core/blob/main/docs/EXTENSIONS_AND_LIBRARIES.md)
+in core (currently private) for the host integration design.
+
+## Usage
+
+Once `@holodeck/sdk` is available to your application, create and check a scene:
 
 ```typescript
 import {
-  SceneFile,
-  createTransform,
   createMaterial,
+  createTransform,
   generateId,
   validateScene,
-  Importer,
-  Provider
+  type SceneFile,
 } from '@holodeck/sdk';
 
-// Create a simple infrastructure scene
 const scene: SceneFile = {
   version: '0.1.0',
-  metadata: {
-    name: 'My Infrastructure',
-    description: 'A sample infrastructure scene',
-    author: 'Your Name'
-  },
+  metadata: { name: 'My infrastructure' },
   scene: {
-    nodes: [
-      {
-        id: generateId(),
-        type: 'server',
-        name: 'Web Server',
-        transform: createTransform(
-          { x: 0, y: 0, z: 0 }  // position
-        ),
-        material: createMaterial({
-          color: { r: 0.2, g: 0.8, b: 0.2, a: 1 }
-        }),
-        status: 'healthy',
-        metadata: {
-          cpu: '85%',
-          memory: '12GB'
-        }
-      }
-    ],
-    edges: []
-  }
+    nodes: [{
+      id: generateId(),
+      type: 'server',
+      name: 'Web server',
+      transform: createTransform({ x: 0, y: 0, z: 0 }),
+      material: createMaterial({ color: { r: 0.2, g: 0.8, b: 0.2, a: 1 } }),
+      status: 'healthy',
+      metadata: { cpu: '85%', memory: '12GB' },
+    }],
+    edges: [],
+  },
 };
 
-// Validate the scene
 const validation = validateScene(scene);
 if (!validation.valid) {
-  console.error('Scene validation failed:', validation.errors);
+  console.error(validation.errors);
 }
 ```
 
-### Define a Custom Importer
+`validateScene` performs basic structural and reference checks; it does not
+run the JSON Schema. Use [`scenefile.schema.json`](schema/scenefile.schema.json)
+with a JSON Schema validator when you need schema validation.
+
+### Extensions
+
+An editor registers the kinds it accepts. An extension contributes items keyed
+by kind; each item's ID is unique within that kind.
 
 ```typescript
-import { Importer, ImportResult } from '@holodeck/sdk';
+import { ContributionRegistry, HOLODECK_KINDS, packToExtension } from '@holodeck/sdk';
 
-class TerraformImporter implements Importer {
-  id = 'terraform-importer';
-  name = 'Terraform Infrastructure Importer';
-  description = 'Imports Terraform state into 3D scenes';
-  supportedFormats = ['.tfstate', '.tf'];
+const registry = new ContributionRegistry();
+registry.registerKind({ kind: HOLODECK_KINDS.flowPalette });
+registry.install(packToExtension({
+  id: 'example.infrastructure',
+  version: '0.1.0',
+  paletteItems: [{ id: 'example:server', nodeType: 'server', label: 'Server' }],
+}));
 
-  async import(input: string): Promise<ImportResult> {
-    const tfData = JSON.parse(input);
-
-    // Transform Terraform resources into SceneNodes
-    const nodes = tfData.resources.map(resource => ({
-      id: resource.name,
-      type: resource.type,
-      name: resource.name,
-      transform: createTransform({
-        x: Math.random() * 10,
-        y: 0,
-        z: Math.random() * 10
-      }),
-      material: createMaterial({
-        color: getColorForResourceType(resource.type)
-      }),
-      metadata: resource.instances[0]?.attributes || {}
-    }));
-
-    return {
-      scene: {
-        version: '0.1.0',
-        metadata: {
-          name: 'Terraform Infrastructure',
-          importedBy: this.id,
-          importedAt: new Date().toISOString()
-        },
-        scene: { nodes, edges: [] }
-      },
-      warnings: [],
-      errors: []
-    };
-  }
-
-  async validate(input: string): Promise<boolean> {
-    try {
-      JSON.parse(input);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}
+console.log(registry.list(HOLODECK_KINDS.flowPalette));
 ```
 
-### Define a Custom Provider
+Known atomicity limitations are tracked in
+[#6](https://github.com/hyperdrive-technology/holodeck-sdk/issues/6).
+The contracts and their comments in [`ts/src/`](ts/src/) are the API reference.
 
-```typescript
-import { Provider, MetricsQuery, MetricsResult } from '@holodeck/sdk';
+## Scene file format
 
-class PrometheusProvider implements Provider {
-  id = 'prometheus-provider';
-  name = 'Prometheus Metrics Provider';
-  description = 'Provides metrics from Prometheus';
-
-  private baseUrl: string = '';
-  private connected = false;
-
-  async connect(config: any): Promise<void> {
-    this.baseUrl = config.url;
-    // Test connection
-    const response = await fetch(`${this.baseUrl}/-/healthy`);
-    if (!response.ok) {
-      throw new Error('Failed to connect to Prometheus');
-    }
-    this.connected = true;
-  }
-
-  async disconnect(): Promise<void> {
-    this.connected = false;
-  }
-
-  isConnected(): boolean {
-    return this.connected;
-  }
-
-  async query(query: MetricsQuery): Promise<MetricsResult[]> {
-    const results: MetricsResult[] = [];
-
-    for (const nodeId of query.nodeIds || []) {
-      for (const metricName of query.metricNames || []) {
-        // Query Prometheus for this metric
-        const promQuery = `${metricName}{instance="${nodeId}"}`;
-        const response = await fetch(
-          `${this.baseUrl}/api/v1/query?query=${encodeURIComponent(promQuery)}`
-        );
-
-        const data = await response.json();
-
-        results.push({
-          nodeId,
-          metricName,
-          dataPoints: data.data.result.map((r: any) => ({
-            timestamp: new Date(r.value[0] * 1000),
-            value: parseFloat(r.value[1]),
-            tags: r.metric
-          })),
-          unit: getUnitForMetric(metricName)
-        });
-      }
-    }
-
-    return results;
-  }
-
-  async healthCheck(): Promise<boolean> {
-    if (!this.connected) return false;
-
-    try {
-      const response = await fetch(`${this.baseUrl}/-/healthy`);
-      return response.ok;
-    } catch {
-      return false;
-    }
-  }
-}
-```
-
-## Repository Structure
-
-```
-holodeck-sdk/
-├── schema/
-│   └── scenefile.schema.json    # JSON Schema for validation
-├── ts/
-│   ├── src/
-│   │   └── index.ts            # TypeScript interfaces and utilities
-│   ├── dist/                   # Built packages (generated)
-│   ├── package.json
-│   └── tsconfig.json
-├── examples/
-│   ├── basic-usage/            # Basic usage examples
-│   └── README.md              # Examples documentation
-├── .github/
-│   └── workflows/
-│       └── publish.yml         # CI/CD for publishing packages
-├── CHANGELOG.md
-├── LICENSE
-└── README.md
-```
-
-## Scene File Format
-
-A Holodeck scene file is a JSON document that represents a 3D infrastructure visualization:
+A scene is a JSON document. This minimal example uses the current format:
 
 ```json
 {
   "version": "0.1.0",
-  "metadata": {
-    "name": "Production Infrastructure",
-    "description": "Our main production environment",
-    "author": "DevOps Team",
-    "created": "2024-01-15T10:00:00Z",
-    "tags": ["production", "aws", "kubernetes"]
-  },
+  "metadata": { "name": "Production infrastructure" },
   "scene": {
-    "nodes": [
-      {
-        "id": "web-server-1",
-        "type": "server",
-        "name": "Web Server",
-        "transform": {
-          "position": { "x": 0, "y": 0, "z": 0 },
-          "rotation": { "x": 0, "y": 0, "z": 0 },
-          "scale": { "x": 1, "y": 1, "z": 1 }
-        },
-        "geometry": {
-          "type": "box",
-          "parameters": { "width": 2, "height": 1, "depth": 1 }
-        },
-        "material": {
-          "color": { "r": 0.2, "g": 0.8, "b": 0.2, "a": 1 },
-          "metalness": 0.1,
-          "roughness": 0.7
-        },
-        "status": "healthy",
-        "metadata": {
-          "cpu": "85%",
-          "memory": "12GB",
-          "instance_type": "t3.large"
-        }
-      }
-    ],
-    "edges": [
-      {
-        "id": "connection-1",
-        "source": "web-server-1",
-        "target": "database-1",
-        "type": "data-connection",
-        "color": { "r": 0.5, "g": 0.5, "b": 0.5, "a": 0.8 },
-        "width": 0.1,
-        "style": "solid"
-      }
-    ]
+    "nodes": [{
+      "id": "web-server-1",
+      "type": "server",
+      "name": "Web server",
+      "transform": {
+        "position": { "x": 0, "y": 0, "z": 0 },
+        "rotation": { "x": 0, "y": 0, "z": 0 },
+        "scale": { "x": 1, "y": 1, "z": 1 }
+      },
+      "geometry": { "type": "box", "parameters": { "width": 2, "height": 1, "depth": 1 } },
+      "material": { "color": { "r": 0.2, "g": 0.8, "b": 0.2, "a": 1 } },
+      "status": "healthy"
+    }],
+    "edges": []
   }
 }
 ```
 
-## Integration with Holodeck Ecosystem
-
-The SDK is designed to work seamlessly with other Holodeck components:
-
-- **[holodeck](https://github.com/hyperdrive-technology/holodeck)** - Main monorepo with CLI and React components
-- **[`core/gateway`](../core/gateway/)** — Rust metrics/sync gateway (not a separate Go repo)
-- **[holodeck-importer-tf](https://github.com/hyperdrive-technology/holodeck-importer-tf)** - Terraform infrastructure import
-- **[holodeck-provider-otel](https://github.com/hyperdrive-technology/holodeck-provider-otel)** - OpenTelemetry metrics provider
-- **[holodeck-provider-hyperdrive](https://github.com/hyperdrive-technology/holodeck-provider-hyperdrive)** - Real-time data bridge
-
-## Plugin Development
-
-### Creating an Importer
-
-Importers transform external data sources into Holodeck scene files:
-
-1. Implement the `Importer` interface
-2. Define supported file formats
-3. Parse input data and create SceneNodes/SceneEdges
-4. Return a complete SceneFile with metadata
-
-### Creating a Provider
-
-Providers supply live data to scene nodes:
-
-1. Implement the `Provider` interface
-2. Handle connection lifecycle (connect/disconnect)
-3. Query external systems for metrics
-4. Return standardized MetricsResult data
-
-### Creating Animation Hooks
-
-Animation hooks add custom behaviors to scenes:
-
-1. Implement the `AnimationHook` interface
-2. Handle frame updates and node/edge changes
-3. Update scene properties based on data or time
-
-## Building from Source
-
-### TypeScript Package
-
-```bash
-cd ts
-npm install
-npm run build
-npm test
-```
-
 ## Versioning
 
-This project follows [Semantic Versioning](https://semver.org/).
+The package currently declares version 0.1.0 and follows semantic versioning.
+Coordinate breaking contract changes with consumers and record them in the
+[changelog](CHANGELOG.md).
 
-Breaking changes to the core interfaces will result in a major version bump. All ecosystem packages should pin to the same major version of the SDK to ensure compatibility.
+## Contributing and support
 
-## Contributing
-
-We welcome contributions! Please see our [contributing guidelines](CONTRIBUTING.md) for details.
-
-### Development Workflow
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes (ensure tests pass)
-4. Update documentation if needed
-5. Submit a pull request
-
-## License
-
-MIT - See [LICENSE](LICENSE) for details.
-
-## Support
-
-- 📖 [Documentation](https://github.com/hyperdrive-technology/holodeck-sdk#readme)
-- 🐛 [Issues](https://github.com/hyperdrive-technology/holodeck-sdk/issues)
-- 💬 [Discussions](https://github.com/hyperdrive-technology/holodeck-sdk/discussions)
-- 🌟 [Hyperdrive Technology](https://github.com/hyperdrive-technology)
-
----
-
-Built with ❤️ by the [Hyperdrive Technology](https://github.com/hyperdrive-technology) team.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks, and the
+[organization guide](https://github.com/hyperdrive-technology/.github/blob/main/CONTRIBUTING.md)
+for the shared contribution and review process.
+Use [issues](https://github.com/hyperdrive-technology/holodeck-sdk/issues) for bugs
+and [Discussions](https://github.com/hyperdrive-technology/holodeck-sdk/discussions)
+for questions. Licensed under [MIT](LICENSE).
