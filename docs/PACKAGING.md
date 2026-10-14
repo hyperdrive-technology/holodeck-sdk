@@ -330,26 +330,35 @@ importer gives "draw my AWS account". The older `Importer → SceneFile` interfa
 ## 7. The flow engine (`holodeck.flow`, M3)
 
 The second engine is a Node-RED-style editor on xyflow with generic function-block logic. It is not an
-IEC/ISA-specific language. Blocks are data plus an evaluator:
+IEC/ISA-specific language. Blocks are data plus an evaluator. The authoritative types and semantics are
+in `@holodeck/flow-runtime` (holodeck `packages/flow-runtime/README.md`); in outline:
 
 ```ts
 interface FlowBlockDefinition {                // kind holodeck.flow.block
   id: string;                                  // 'logic.and'
   label: string; category: string;             // 'Logic'
-  inputs:  { name: string; type: 'bool' | 'number' | 'string' | 'any'; variadic?: boolean }[];
+  inputs:  { name: string; type: 'bool' | 'number' | 'string' | 'any'; variadic?: { min: number; max: number } }[];
   outputs: { name: string; type: … }[];
   params?: Record<string, ParamSpec>;          // e.g. TON preset time
-  evaluate(inputs, state, ctx): outputs;       // pure per scan; `state` persists per node (timers, latches, edges)
+  initialState?(params): State;
+  // Pure apart from the returned state, which persists per node (timers, latches, edges).
+  evaluate(ctx: { inputs; params; state; dtMs; nowMs }): { outputs; state? };
 }
 ```
+
+A flow document's body is `holodeck.flow.graph.v1`: `{ nodes: [{ id, block, params?, position }], wires:
+[{ id, from: { node, port }, to: { node, port } }] }`. The runtime has four built-in blocks: `flow.const`,
+`flow.delay` (the only legal way to close a loop), `signal.in` and `signal.out`.
 
 - **Evaluation is cyclic dataflow.** Each scan evaluates blocks in topological order. A feedback wire must go
   through an explicit delay block. This is FBD semantics, and it maps cleanly onto a PLC when a host
   provider deploys the same graph.
 - **Signals in and out are blocks.** `signal.in` subscribes to any provider source and `signal.out` writes
   one. Iso documents can bind to `flow:<nodeId>.<port>` sources published by the flow runtime.
-- **Deploy = provider.** `holodeck.flow.local` (in `holodeck.logic`) has `capabilities.deploy`. It runs the
-  graph in the browser and publishes node outputs as sources. A host product may ship another deploy
+- **Deploy = provider.** `holodeck.flow.local` (package `holodeck.flow-runtime`) has `capabilities.deploy`.
+  It runs the graph in the browser and publishes node outputs as `flow:<nodeId>.<port>` sources. A
+  provider cannot reach a document's other connections by itself, so `signal.in`/`signal.out` go through
+  a host-supplied signal bridge (`createHubSignalBridge(hub)`). A host product may ship another deploy
   provider that compiles the same document for its own runtime. The editor's "Deploy" button calls
   `hub.session(connectionId).deploy(doc)`, whichever provider it is.
 - Message-passing (Node-RED `msg` events) is a later extension: event-typed ports on the same block contract.
