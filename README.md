@@ -166,8 +166,11 @@ throws an `AggregateError` containing all callback failures in execution order.
 The operation remains committed: an install is fully installed, an uninstall is
 fully removed, and a kind registration remains registered even if replay hooks
 fail. Inspect the registry after a callback error; retrying the same install or
-registration will report a duplicate. Callback errors during registration prevent
-the unregister function from being returned. Runtimes must support `AggregateError`.
+registration will report a duplicate. When `registerKind()` hits callback
+errors it throws a `KindRegistrationError` (a subclass of `AggregateError`) whose
+`unregister` property is the function a successful call would have returned.
+A `registerKind()` call for a kind whose replay validation is still running
+(for example from inside a `validate` callback) fails with `DUPLICATE_KIND`. Runtimes must support `AggregateError`.
 
 The contracts and their comments in [`ts/src/`](ts/src/) are the API reference.
 
