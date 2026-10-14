@@ -74,6 +74,8 @@ interface Slot {
   def: ProviderConnection;
   key: string;
   provider: HolodeckProvider | undefined;
+  /** Provider capabilities captured when the slot opened. */
+  capabilities: Readonly<HolodeckProvider['capabilities']>;
   controller: AbortController;
   session: ProviderSession | undefined;
   status: ProviderStatus;
@@ -112,15 +114,32 @@ function deepFreeze<T>(value: T): T {
 }
 
 const STATES = ['connecting', 'live', 'stale', 'disconnected', 'error'];
+const QUALITIES: readonly string[] = ['good', 'uncertain', 'bad'];
+
+/** Every status the hub stores or returns is a frozen object built here or by `copyStatus`. */
+function makeStatus(state: ProviderStatus['state'], since: number, message?: string): ProviderStatus {
+  return Object.freeze(message === undefined ? { state, since } : { state, since, message });
+}
+
+/**
+ * Frozen copy of a provider's sample, so a provider reusing or mutating its
+ * objects cannot change stored values without a delivery. `undefined` for
+ * anything that is not a sample with a signal value; an unknown quality
+ * becomes `uncertain`.
+ */
+function copySample(raw: unknown): Sample | undefined {
+  if (!isObj(raw) || !isNonEmptyStr(raw.source) || !isSignalValue(raw.value)) return undefined;
+  const sample: Sample = { source: raw.source, value: raw.value, ts: typeof raw.ts === 'number' ? raw.ts : Number.NaN };
+  if (raw.quality !== undefined) sample.quality = QUALITIES.includes(raw.quality as string) ? (raw.quality as Sample['quality'] & string) : 'uncertain';
+  return Object.freeze(sample);
+}
 
 /** Frozen copy of a provider's status; a malformed one becomes an `error` status. */
 function copyStatus(raw: unknown, now: number): ProviderStatus {
   if (isObj(raw) && STATES.includes(raw.state as string) && typeof raw.since === 'number') {
-    const status: ProviderStatus = { state: raw.state as ProviderStatus['state'], since: raw.since };
-    if (isStr(raw.message)) status.message = raw.message;
-    return Object.freeze(status);
+    return makeStatus(raw.state as ProviderStatus['state'], raw.since, isStr(raw.message) ? raw.message : undefined);
   }
-  return Object.freeze({ state: 'error', message: 'provider returned an invalid status', since: now });
+  return makeStatus('error', now, 'provider returned an invalid status');
 }
 
 const refKey = (objectId: string, param: string) => `${objectId}\u0000${param}`;
@@ -158,8 +177,8 @@ export class ProviderHub {
   private byTarget = new Map<string, BindingRef>();
   /** connectionId → source → latest sample */
   private readonly latest = new Map<string, Map<string, Sample>>();
-  private metrics: ObjectValues<SignalValue> = dict();
-  private quality: ObjectValues<SignalQuality> = dict();
+  private metrics: ObjectValues<SignalValue> = Object.freeze(dict<Readonly<Record<string, SignalValue>>>());
+  private quality: ObjectValues<SignalQuality> = Object.freeze(dict<Readonly<Record<string, SignalQuality>>>());
   private snapshot: HubSnapshot | undefined;
   private readonly listeners = new Set<() => void>();
   private readonly pending = new Set<Promise<void>>();
@@ -259,7 +278,7 @@ export class ProviderHub {
     if (!slot || !session) {
       throw new ProviderHubError(`connection "${ref.binding.connection}" is not connected`, 'NOT_CONNECTED');
     }
-    if (!slot.provider?.capabilities.write || !session.write) {
+    if (!slot.capabilities.write || !session.write) {
       throw new ProviderHubError(`provider "${slot.def.provider}" does not support write`, 'NOT_WRITABLE');
     }
     if (!isSignalValue(value)) throw new TypeError('value must be a signal value');
@@ -299,11 +318,12 @@ export class ProviderHub {
       def,
       key: this.connectionKey(def),
       provider,
+      capabilities: Object.freeze({ ...(provider?.capabilities ?? {}) }),
       controller: new AbortController(),
       session: undefined,
       status: provider
-        ? { state: 'connecting', since: this.now() }
-        : { state: 'error', message: `provider "${def.provider}" is not installed`, since: this.now() },
+        ? makeStatus('connecting', this.now())
+        : makeStatus('error', this.now(), `provider "${def.provider}" is not installed`),
       offStatus: undefined,
       unsubscribe: undefined,
       subscribedKey: undefined,
@@ -334,7 +354,7 @@ export class ProviderHub {
       (session) => this.onConnected(def.id, slot, session),
       (error: unknown) => {
         if (!this.isCurrent(def.id, slot)) return;
-        slot.status = { state: 'error', message: errorMessage(error), since: this.now() };
+        slot.status = makeStatus('error', this.now(), errorMessage(error));
         this.log('warn', `connection "${def.id}" failed`, error);
         this.publish();
       },
@@ -365,7 +385,7 @@ export class ProviderHub {
       });
     } catch (error) {
       // A session that cannot report status is unusable: close it, show the error.
-      slot.status = { state: 'error', message: `session setup failed: ${errorMessage(error)}`, since: this.now() };
+      slot.status = makeStatus('error', this.now(), `session setup failed: ${errorMessage(error)}`);
       this.log('warn', `connection "${id}" setup failed`, error);
       this.detach(id, session, offStatus);
       this.publish();
@@ -404,12 +424,16 @@ export class ProviderHub {
     this.slots.delete(id);
     this.latest.delete(id);
     slot.controller.abort();
-    try {
-      slot.unsubscribe?.();
-      slot.offStatus?.();
-    } catch (error) {
-      this.log('warn', `unsubscribing "${id}" failed`, error);
+    // Each cleanup runs even if another throws.
+    for (const cleanup of [slot.unsubscribe, slot.offStatus]) {
+      try {
+        cleanup?.();
+      } catch (error) {
+        this.log('warn', `unsubscribing "${id}" failed`, error);
+      }
     }
+    slot.unsubscribe = undefined;
+    slot.offStatus = undefined;
     const session = slot.session;
     slot.session = undefined;
     if (!session) return Promise.resolve();
@@ -461,14 +485,26 @@ export class ProviderHub {
     const sources = [...(this.bySource.get(id)?.keys() ?? [])].sort();
     const key = sources.join('\u0000');
     if (key === slot.subscribedKey) return;
+    // Retire the old subscription first. Its key is forgotten until the
+    // replacement succeeds, so a failure here or below is retried by the next
+    // setBindings() with the same sources.
     const previous = slot.unsubscribe;
     slot.unsubscribe = undefined;
-    slot.subscribedKey = key;
+    slot.subscribedKey = undefined;
     const generation = ++slot.subscription;
-    previous?.();
+    if (previous) {
+      try {
+        previous();
+      } catch (error) {
+        this.log('warn', `unsubscribing "${id}" failed`, error);
+      }
+    }
     const latest = this.latest.get(id);
     if (latest) for (const source of [...latest.keys()]) if (!sources.includes(source)) latest.delete(source);
-    if (!sources.length) return;
+    if (!sources.length) {
+      if (slot.subscription === generation) slot.subscribedKey = key;
+      return;
+    }
     // subscribe() may deliver synchronously, and a listener may then rebind or
     // remove this connection before subscribe() returns. Only the newest
     // generation of a current slot keeps its handle or delivers samples.
@@ -477,10 +513,19 @@ export class ProviderHub {
       const handle = session.subscribe(sources, (samples) => {
         if (live()) this.onSamples(id, slot, samples);
       });
-      if (live()) slot.unsubscribe = handle;
-      else handle();
+      if (live()) {
+        slot.unsubscribe = handle;
+        slot.subscribedKey = key;
+      } else {
+        try {
+          handle();
+        } catch (error) {
+          this.log('warn', `unsubscribing superseded "${id}" failed`, error);
+        }
+      }
     } catch (error) {
-      slot.status = { state: 'error', message: `subscribe failed: ${errorMessage(error)}`, since: this.now() };
+      if (!live()) return;
+      slot.status = makeStatus('error', this.now(), `subscribe failed: ${errorMessage(error)}`);
       this.log('warn', `subscribe on "${id}" failed`, error);
     }
   }
@@ -493,9 +538,15 @@ export class ProviderHub {
     if (!latest) this.latest.set(id, (latest = new Map()));
     let metrics: Record<string, Readonly<Record<string, SignalValue>>> | undefined;
     let quality: Record<string, Readonly<Record<string, SignalQuality>>> | undefined;
-    for (const sample of samples) {
+    if (!Array.isArray(samples)) {
+      this.log('warn', `provider for "${id}" delivered a non-array`, samples);
+      return;
+    }
+    for (const raw of samples) {
+      const sample = copySample(raw);
+      if (!sample) continue;
       const targets = sources.get(sample.source);
-      if (!targets || !isSignalValue(sample.value)) continue;
+      if (!targets) continue;
       latest.set(sample.source, sample);
       for (const t of targets) {
         const value = applyTransform(t.transform, sample.value);

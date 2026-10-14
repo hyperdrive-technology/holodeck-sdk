@@ -698,6 +698,140 @@ describe('ProviderHub sweep: synchronous subscribe and caller-owned input (GPT r
   });
 });
 
+describe('ProviderHub re-sweep: provider objects and every stored status (GPT review sdk#23 r6)', () => {
+  /** A provider driven by the test: `emit` delivers, `handles` counts live subscriptions. */
+  const scripted = (opts: { unsubscribeThrows?: boolean; subscribeThrowsOnce?: boolean; statusUnsubThrows?: boolean } = {}) => {
+    const live = new Map<number, readonly string[]>();
+    let sink: ((s: readonly Sample[]) => void) | undefined;
+    let next = 0;
+    let statusOffCalls = 0;
+    let failNext = opts.subscribeThrowsOnce ?? false;
+    const provider: HolodeckProvider = {
+      id: 'test.scripted',
+      label: 'Scripted',
+      capabilities: {},
+      async connect() {
+        return {
+          status: () => ({ state: 'live', since: 0 }),
+          onStatus: () => () => {
+            statusOffCalls++;
+            if (opts.statusUnsubThrows) throw new Error('status unsubscribe threw');
+          },
+          subscribe(sources, onSamples) {
+            if (failNext) {
+              failNext = false;
+              throw new Error('subscribe threw');
+            }
+            const token = ++next;
+            live.set(token, [...sources]);
+            sink = onSamples;
+            return () => {
+              live.delete(token);
+              if (opts.unsubscribeThrows) throw new Error('unsubscribe threw');
+            };
+          },
+          close: async () => {},
+        };
+      },
+    };
+    return { provider, live, emit: (samples: unknown) => sink?.(samples as readonly Sample[]), statusOffCalls: () => statusOffCalls };
+  };
+
+  it('P2: a provider reusing and mutating its Sample object cannot change stored values without a delivery', async () => {
+    const p = scripted();
+    const { hub } = setup([p.provider]);
+    hub.setConnections([conn('c', 'test.scripted')]);
+    hub.setBindings([bind('a', 'v', 'c', 's')]);
+    await hub.settled();
+    const reused = { source: 's', value: 10 as number, ts: 1 };
+    p.emit([reused]);
+    reused.value = 99;
+    expect(hub.getSnapshot().metrics.a).toEqual({ v: 10 });
+    hub.setBindings([bind('a', 'v', 'c', 's'), bind('b', 'v', 'c', 's')]); // recompute from stored samples
+    expect(hub.getSnapshot().metrics).toEqual({ a: { v: 10 }, b: { v: 10 } });
+    p.emit([reused]);
+    expect(hub.getSnapshot().metrics.a).toEqual({ v: 99 });
+  });
+
+  it('ignores malformed deliveries and maps unknown quality to uncertain', async () => {
+    const p = scripted();
+    const { hub, log } = setup([p.provider]);
+    hub.setConnections([conn('c', 'test.scripted')]);
+    hub.setBindings([bind('a', 'v', 'c', 's')]);
+    await hub.settled();
+    p.emit({ source: 's', value: 1 });
+    expect(log).toHaveBeenCalledWith('warn', 'provider for "c" delivered a non-array', expect.anything());
+    p.emit([null, { source: 's' }, { source: 's', value: 2, ts: 1, quality: 'excellent' }]);
+    expect(hub.getSnapshot().metrics.a).toEqual({ v: 2 });
+    expect(hub.getSnapshot().quality.a).toEqual({ v: 'uncertain' });
+  });
+
+  it('P2: an unsubscribe that throws during a → b still subscribes b', async () => {
+    const p = scripted({ unsubscribeThrows: true });
+    const { hub, log } = setup([p.provider]);
+    hub.setConnections([conn('c', 'test.scripted')]);
+    hub.setBindings([bind('x', 'v', 'c', 'a')]);
+    await hub.settled();
+    hub.setBindings([bind('x', 'v', 'c', 'b')]);
+    expect([...p.live.values()]).toEqual([['b']]);
+    expect(log).toHaveBeenCalledWith('warn', 'unsubscribing "c" failed', expect.any(Error));
+  });
+
+  it('P2: a failed subscribe is retried by the next setBindings with the same sources', async () => {
+    const p = scripted({ subscribeThrowsOnce: true });
+    const { hub } = setup([p.provider]);
+    hub.setConnections([conn('c', 'test.scripted')]);
+    await hub.settled();
+    hub.setBindings([bind('x', 'v', 'c', 'b')]);
+    expect(hub.getSnapshot().connections.c?.status).toMatchObject({ state: 'error', message: 'subscribe failed: subscribe threw' });
+    expect(p.live.size).toBe(0);
+    hub.setBindings([bind('x', 'v', 'c', 'b')]);
+    expect([...p.live.values()]).toEqual([['b']]);
+  });
+
+  it('closing a connection runs the status unsubscribe even when the sample unsubscribe throws', async () => {
+    const p = scripted({ unsubscribeThrows: true });
+    const { hub } = setup([p.provider]);
+    hub.setConnections([conn('c', 'test.scripted')]);
+    hub.setBindings([bind('x', 'v', 'c', 'a')]);
+    await hub.settled();
+    hub.setConnections([]);
+    expect(p.statusOffCalls()).toBe(1);
+    expect(p.live.size).toBe(0);
+  });
+
+  it('P2: every status in a snapshot is frozen, including connecting, missing-provider and failure paths', async () => {
+    const slow = fakeProvider('test.slow', { delay: new Promise(() => {}) });
+    const failing = fakeProvider('test.fails', { fail: new Error('nope') });
+    const { hub } = setup([slow.provider, failing.provider]);
+    expect(Object.isFrozen(hub.getSnapshot().metrics) && Object.isFrozen(hub.getSnapshot().quality)).toBe(true);
+    hub.setConnections([conn('pending', 'test.slow'), conn('missing', 'test.none'), conn('failed', 'test.fails')]);
+    const before = hub.getSnapshot().connections;
+    expect(before.pending?.status.state).toBe('connecting');
+    expect(before.missing?.status.state).toBe('error');
+    for (const entry of Object.values(before)) {
+      expect(Object.isFrozen(entry) && Object.isFrozen(entry.status)).toBe(true);
+      expect(() => {
+        (entry.status as { state: string }).state = 'live';
+      }).toThrow(TypeError);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    expect(Object.isFrozen(hub.getSnapshot().connections.failed?.status)).toBe(true);
+    expect(hub.getSnapshot().connections.failed?.status.state).toBe('error');
+  });
+
+  it('write capability is captured when the connection opens', async () => {
+    const { provider, sessions } = fakeProvider('test.fake', { write: true });
+    const { hub } = setup([provider]);
+    hub.setConnections([conn('c')]);
+    hub.setBindings([bind('a', 'v', 'c', 's')]);
+    await hub.settled();
+    (provider.capabilities as { write?: boolean }).write = false; // later edits to the provider object do not matter
+    await hub.write('a', 'v', 1);
+    expect(sessions[0]!.write).toHaveBeenCalledWith('s', 1);
+  });
+});
+
 describe('ProviderHub with hostile ids (GPT review sdk#23 P1)', () => {
   it('never writes through __proto__ object ids, params or connection ids', async () => {
     const { provider, sessions } = fakeProvider();
