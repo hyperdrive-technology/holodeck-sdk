@@ -14,8 +14,10 @@
 export function unlerp(x: number, a: number, b: number): number {
   const span = b - a;
   if (span === 0) return 0;
-  if (Number.isFinite(span)) return (x - a) / span;
-  // span overflowed: halve everything (the ratio is unchanged).
+  const offset = x - a;
+  if (Number.isFinite(span) && Number.isFinite(offset)) return offset / span;
+  // The span or the offset overflowed (#32: x = 1e308 in [-1e308, -9e307]):
+  // halve everything; the ratio is unchanged and every half is finite.
   return (x * 0.5 - a * 0.5) / (b * 0.5 - a * 0.5);
 }
 

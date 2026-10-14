@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   SIM_PROVIDER_ID,
   createManualSchedule,
@@ -334,6 +334,51 @@ describe('runProviderConformance catches broken providers', () => {
     });
     clearInterval(timer);
     expect(failures).toEqual(['no samples are delivered after unsubscribe']);
+  });
+
+  it('#33: does not deadlock under fake timers (flush advances the quiet window)', async () => {
+    vi.useFakeTimers();
+    try {
+      const failures: string[] = [];
+      // Real setInterval inside the sim provider, driven by fake timers.
+      const run = runProviderConformance(
+        () => createSimProvider({ intervalMs: 10 }),
+        { sources: ['sine:1'], flush: () => vi.advanceTimersByTime(1_000) },
+        (ok, m) => {
+          if (!ok) failures.push(m);
+        },
+      );
+      await vi.runAllTimersAsync().catch(() => {}); // lets the first-sample race settle
+      await run;
+      expect(failures).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('#33: an injected wait drives the quiet window deterministically', async () => {
+    vi.useFakeTimers();
+    try {
+      const waits: number[] = [];
+      const failures: string[] = [];
+      await runProviderConformance(
+        () => createSimProvider({ intervalMs: 10 }),
+        {
+          sources: ['sine:1'],
+          wait: async (ms) => {
+            waits.push(ms);
+            await vi.advanceTimersByTimeAsync(ms);
+          },
+        },
+        (ok, m) => {
+          if (!ok) failures.push(m);
+        },
+      );
+      expect(failures).toEqual([]);
+      expect(waits).toEqual([100]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('the sim provider passes with a manual schedule and flush', async () => {
