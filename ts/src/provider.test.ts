@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   SIM_PROVIDER_ID,
   createManualSchedule,
@@ -334,6 +334,69 @@ describe('runProviderConformance catches broken providers', () => {
     });
     clearInterval(timer);
     expect(failures).toEqual(['no samples are delivered after unsubscribe']);
+  });
+
+  it('sdk#34 review: an async flush does not shorten the quiet window', async () => {
+    let leak: ReturnType<typeof setTimeout> | undefined;
+    const lateLeak: HolodeckProvider = {
+      id: 'late.leak',
+      label: 'Late leak',
+      capabilities: {},
+      async connect() {
+        let state: ProviderStatus = { state: 'live', since: 0 };
+        return {
+          status: () => state,
+          onStatus: () => () => {},
+          subscribe(sources, onSamples) {
+            onSamples(sources.map((source) => ({ source, value: 1, ts: 1 })));
+            // Leak: one more delivery 250 ms after unsubscribe.
+            return () => {
+              leak = setTimeout(() => onSamples(sources.map((source) => ({ source, value: 2, ts: 2 }))), 250);
+            };
+          },
+          async close() {
+            state = { state: 'disconnected', since: 1 };
+          },
+        };
+      },
+    };
+    const failures: string[] = [];
+    let flushes = 0;
+    await runProviderConformance(
+      () => lateLeak,
+      // Only the first flush is slow (200 ms); the second is instant, as in the review's repro.
+      { sources: ['a'], quietMs: 100, flush: () => (flushes++ === 0 ? new Promise((resolve) => setTimeout(resolve, 200)) : undefined) },
+      (ok, m) => {
+        if (!ok) failures.push(m);
+      },
+    );
+    clearTimeout(leak);
+    expect(failures).toEqual(['no samples are delivered after unsubscribe']);
+  });
+
+  it('#33: an injected wait drives the quiet window deterministically', async () => {
+    vi.useFakeTimers();
+    try {
+      const waits: number[] = [];
+      const failures: string[] = [];
+      await runProviderConformance(
+        () => createSimProvider({ intervalMs: 10 }),
+        {
+          sources: ['sine:1'],
+          wait: async (ms) => {
+            waits.push(ms);
+            await vi.advanceTimersByTimeAsync(ms);
+          },
+        },
+        (ok, m) => {
+          if (!ok) failures.push(m);
+        },
+      );
+      expect(failures).toEqual([]);
+      expect(waits).toEqual([100]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('the sim provider passes with a manual schedule and flush', async () => {

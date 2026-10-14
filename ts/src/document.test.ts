@@ -59,6 +59,13 @@ describe('applyTransform', () => {
       expect(applyTransform({ kind: 'scale', inMin: 0, inMax: 1, outMin: 1e308, outMax: 1.1e308, clamp: false }, 2)).toBe(1e308 + 2 * (1.1e308 - 1e308));
     });
 
+    it('#32: stays finite when only the offset from inMin overflows', () => {
+      const t: ValueTransform = { kind: 'scale', inMin: -1e308, inMax: -9e307, outMin: 0, outMax: 1, clamp: false };
+      expect(applyTransform(t, 1e308)).toBeCloseTo(20, 10);
+      expect(applyTransform({ ...t, clamp: true }, 1e308)).toBe(1);
+      expect(applyTransform({ ...t, clamp: true }, -1.7e308)).toBe(0);
+    });
+
     it('matches main\'s formula wherever main was finite (seeded sweep)', () => {
       // main: t = span === 0 ? 0 : (x - inMin) / span; out = outMin + clamp(t) * (outMax - outMin)
       const mainScale = (x: number, a: number, b: number, c: number, d: number, clamp: boolean) => {

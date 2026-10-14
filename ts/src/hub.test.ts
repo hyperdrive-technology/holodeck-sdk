@@ -939,6 +939,10 @@ describe('invertTransform', () => {
     expect(invertTransform({ kind: 'scale', inMin: 0, inMax: 1, outMin: 0, outMax: Number.MIN_VALUE }, Number.MIN_VALUE)).toBe(1);
   });
 
+  it('#32: inverse stays finite when only the offset overflows', () => {
+    expect(invertTransform({ kind: 'scale', inMin: 0, inMax: 1, outMin: -1e308, outMax: -9e307, clamp: false }, 1e308)).toBeCloseTo(20, 10);
+  });
+
   it('#28: stays finite for wide ranges and rejects values that cannot map', () => {
     const wide = { kind: 'scale', inMin: -1e308, inMax: 1e308, outMin: 0, outMax: 1 } as const;
     expect(invertTransform(wide, 0.5)).toBe(0);
