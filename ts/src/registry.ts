@@ -75,6 +75,24 @@ export class ContributionRegistryError extends Error {
   }
 }
 
+/**
+ * Thrown by `registerKind` when the kind was published but a replay `onInstall`
+ * hook or `kind-registered` subscriber failed. It is still an `AggregateError`
+ * (existing `instanceof` / `.errors` handling keeps working) and additionally
+ * carries the `unregister` function that the normal return value would have
+ * delivered, so the committed kind can always be removed.
+ */
+export class KindRegistrationError extends AggregateError {
+  constructor(
+    errors: Iterable<unknown>,
+    message: string,
+    public readonly unregister: () => void,
+  ) {
+    super(errors, message);
+    this.name = 'KindRegistrationError';
+  }
+}
+
 interface KindSlot {
   def: ContributionKind;
   kind: string;
@@ -109,14 +127,22 @@ export class ContributionRegistry {
   private readonly extensions = new Map<string, ExtensionSlot>();
   /** kind → (id → owning extension), including kinds that are still pending. */
   private readonly reservedIds = new Map<string, Map<string, string>>();
+  /** Kinds whose replay validation is in progress (guards re-entrant registerKind). */
+  private readonly registering = new Set<string>();
   private readonly listeners = new Set<(change: RegistryChange) => void>();
 
-  /** Register a kind, atomically validating pending replay. Returns an unregister function. */
+  /**
+   * Register a kind, atomically validating pending replay. Returns an unregister function.
+   * If replay hooks or subscribers throw, the kind stays registered and the thrown
+   * `KindRegistrationError` (an `AggregateError`) carries the same `unregister` function.
+   */
   registerKind<T extends Contribution>(def: ContributionKind<T>): () => void {
     // Bind methods to the original definition, including prototype methods and
     // their instance state. Capture routing separately from the mutable object.
     const kind = def.kind;
-    if (this.kinds.has(kind)) {
+    // A validator running during replay may call registerKind for this same
+    // kind; it is not published yet, so kinds.has() alone would let both succeed.
+    if (this.kinds.has(kind) || this.registering.has(kind)) {
       throw new ContributionRegistryError(`kind "${kind}" is already registered`, 'DUPLICATE_KIND');
     }
     const slot: KindSlot = {
@@ -131,29 +157,40 @@ export class ContributionRegistry {
     // The slot is private staging state until ALL pending extensions validate.
     // Neither publishing the kind nor calling hooks is safe inside this loop:
     // a later invalid extension must leave pending state intact for a retry.
-    for (const ext of this.extensions.values()) {
-      const items = ext.contributions.find((group) => group.kind === kind)?.items;
-      if (items?.length) {
-        this.validateItems(kind, items, ext.id, slot.owners, slot.validate);
-        this.commitItems(slot, items, ext.id);
-        replay.push([items, ext.id]);
+    this.registering.add(kind);
+    try {
+      for (const ext of this.extensions.values()) {
+        const items = ext.contributions.find((group) => group.kind === kind)?.items;
+        if (items?.length) {
+          this.validateItems(kind, items, ext.id, slot.owners, slot.validate);
+          this.commitItems(slot, items, ext.id);
+          replay.push([items, ext.id]);
+        }
       }
+    } finally {
+      this.registering.delete(kind);
     }
     this.kinds.set(kind, slot);
     // Reservations must describe exactly the replay that was committed, even
     // after unregister/register cycles. Failed validation never reaches here.
     if (slot.owners.size) this.reservedIds.set(kind, new Map(slot.owners));
     else this.reservedIds.delete(kind);
-    this.emit(
-      { type: 'kind-registered', kind },
-      replay.map(([items, extensionId]) => () => slot.onInstall?.(items.map(({ item }) => item), extensionId)),
-    );
-
-    return () => {
+    const unregister = () => {
       if (this.kinds.get(kind) !== slot) return;
       this.kinds.delete(kind);
       this.emit({ type: 'kind-unregistered', kind });
     };
+    try {
+      this.emit(
+        { type: 'kind-registered', kind },
+        replay.map(([items, extensionId]) => () => slot.onInstall?.(items.map(({ item }) => item), extensionId)),
+      );
+    } catch (error) {
+      // The kind is committed; hand the caller the handle it would otherwise lose.
+      if (error instanceof AggregateError) throw new KindRegistrationError(error.errors, error.message, unregister);
+      throw error;
+    }
+    return unregister;
   }
 
   hasKind(kind: string): boolean {

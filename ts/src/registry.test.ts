@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ContributionRegistry,
   ContributionRegistryError,
+  KindRegistrationError,
   packToExtension,
   runContributionKindConformance,
   type Contribution,
@@ -689,5 +690,65 @@ describe('packToExtension', () => {
     expect(ext.contributions['holodeck.flow.nodeType']).toEqual([{ id: 'acme:pump', component: render }]);
     expect(ext.contributions['holodeck.flow.edgeType']).toEqual([{ id: 'acme:pipe', component: render }]);
     expect(ext.contributions['holodeck.scene3d.renderer']).toEqual([{ id: 'acme:pump', nodeType: 'acme:pump', render }]);
+  });
+
+  it('exposes unregister on the error when replay hooks or subscribers fail (#19)', () => {
+    const r = new ContributionRegistry();
+    r.install({ id: 'ext.a', version: '1', contributions: { 'test.part': [tank] } });
+    const hookError = new Error('hook');
+    const subError = new Error('sub');
+    r.subscribe((c) => {
+      if (c.type === 'kind-registered') throw subError;
+    });
+    let failure: unknown;
+    try {
+      r.registerKind<Part>({ ...partKind, onInstall: () => { throw hookError; } });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toBeInstanceOf(KindRegistrationError);
+    expect((failure as KindRegistrationError).errors).toEqual([hookError, subError]);
+    expect(r.hasKind('test.part')).toBe(true);
+
+    const changes: string[] = [];
+    r.subscribe((c) => changes.push(c.type));
+    (failure as KindRegistrationError).unregister();
+    expect(r.hasKind('test.part')).toBe(false);
+    expect(changes).toEqual(['kind-unregistered']);
+    expect(r.pending()['test.part']).toEqual([tank]);
+    // Idempotent, and the kind can be registered again.
+    (failure as KindRegistrationError).unregister();
+    expect(() => r.registerKind(partKind)).toThrow(KindRegistrationError);
+  });
+
+  it('rejects a nested registerKind for the same kind during replay validation (#20)', () => {
+    const r = new ContributionRegistry();
+    r.install({ id: 'ext.a', version: '1', contributions: { 'test.part': [tank] } });
+    let inner: unknown;
+    const reentrant: ContributionKind<Part> = {
+      kind: 'test.part',
+      validate(item): item is Part {
+        try {
+          r.registerKind(partKind);
+        } catch (error) {
+          inner = error;
+        }
+        return true;
+      },
+    };
+    const unregister = r.registerKind(reentrant);
+    expect(inner).toBeInstanceOf(ContributionRegistryError);
+    expect((inner as ContributionRegistryError).code).toBe('DUPLICATE_KIND');
+    expect(r.list('test.part')).toEqual([tank]);
+    unregister();
+    expect(r.hasKind('test.part')).toBe(false);
+  });
+
+  it('allows registering a kind again after a failed replay validation (#20)', () => {
+    const r = new ContributionRegistry();
+    r.install({ id: 'ext.a', version: '1', contributions: { 'test.part': [{ id: 'bad' }] } });
+    expect(() => r.registerKind(partKind)).toThrow(ContributionRegistryError);
+    expect(() => r.registerKind({ kind: 'test.part' })).not.toThrow();
   });
 });
