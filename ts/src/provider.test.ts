@@ -214,7 +214,7 @@ describe('runProviderConformance catches broken providers', () => {
         'declared capability "history" is implemented',
         'sample source "zzz" was requested',
         'every source delivered a sample within 30 ms',
-        'no samples are delivered after unsubscribe',
+        expect.stringMatching(/^no samples are delivered after unsubscribe/),
         'close() leaves the session disconnected',
       ]),
     );
@@ -242,6 +242,107 @@ describe('runProviderConformance catches broken providers', () => {
       },
     };
     expect(await collect(provider)).toEqual(['read returns a sample for every source']);
+  });
+
+  it('#25: catches a leaked subscription deterministically through flush', async () => {
+    const manual = createManualSchedule();
+    const leaky: HolodeckProvider = {
+      id: 'leaky.provider',
+      label: 'Leaky',
+      capabilities: {},
+      async connect() {
+        let state: ProviderStatus = { state: 'live', since: 0 };
+        return {
+          status: () => state,
+          onStatus: () => () => {},
+          subscribe(sources, onSamples) {
+            const deliver = () => onSamples(sources.map((source) => ({ source, value: 1, ts: 1 })));
+            manual.schedule(deliver, 1000); // never cancelled: the leak
+            deliver();
+            return () => {};
+          },
+          async close() {
+            state = { state: 'disconnected', since: 1 };
+          },
+        };
+      },
+    };
+    const failures: string[] = [];
+    await runProviderConformance(() => leaky, { sources: ['a'], quietMs: 1, flush: () => manual.tick() }, (ok, m) => {
+      if (!ok) failures.push(m);
+    });
+    expect(failures).toEqual(['no samples are delivered after unsubscribe']);
+  });
+
+  it('#25: stretches the quiet window to cover slow-ticking providers', async () => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const slowLeak: HolodeckProvider = {
+      id: 'slow.leak',
+      label: 'Slow leak',
+      capabilities: {},
+      async connect() {
+        let state: ProviderStatus = { state: 'live', since: 0 };
+        return {
+          status: () => state,
+          onStatus: () => () => {},
+          subscribe(sources, onSamples) {
+            // first source arrives now, the second only on the next 40 ms tick: two deliveries 40 ms apart
+            onSamples([{ source: sources[0]!, value: 1, ts: 1 }]);
+            timer = setInterval(() => onSamples(sources.map((source) => ({ source, value: 1, ts: 1 }))), 40);
+            return () => {};
+          },
+          async close() {
+            state = { state: 'disconnected', since: 1 };
+          },
+        };
+      },
+    };
+    const failures: string[] = [];
+    await runProviderConformance(() => slowLeak, { sources: ['a', 'b'], quietMs: 1 }, (ok, m) => {
+      if (!ok) failures.push(m);
+    });
+    clearInterval(timer);
+    expect(failures).toEqual([expect.stringMatching(/^no samples are delivered after unsubscribe/)]);
+  });
+
+  it('sdk#31 review: a tiny first-sample timeout does not shorten the unsubscribe check', async () => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const syncLeak: HolodeckProvider = {
+      id: 'sync.leak',
+      label: 'Sync leak',
+      capabilities: {},
+      async connect() {
+        let state: ProviderStatus = { state: 'live', since: 0 };
+        return {
+          status: () => state,
+          onStatus: () => () => {},
+          subscribe(sources, onSamples) {
+            const deliver = () => onSamples(sources.map((source) => ({ source, value: 1, ts: 1 })));
+            deliver(); // first sample synchronously, inside a 1 ms first-sample budget
+            timer = setInterval(deliver, 5); // never cleared: the leak
+            return () => {};
+          },
+          async close() {
+            state = { state: 'disconnected', since: 1 };
+          },
+        };
+      },
+    };
+    const failures: string[] = [];
+    await runProviderConformance(() => syncLeak, { sources: ['a'], timeoutMs: 1, quietMs: 1 }, (ok, m) => {
+      if (!ok) failures.push(m);
+    });
+    clearInterval(timer);
+    expect(failures).toEqual(['no samples are delivered after unsubscribe']);
+  });
+
+  it('the sim provider passes with a manual schedule and flush', async () => {
+    const manual = createManualSchedule();
+    const failures: string[] = [];
+    await runProviderConformance(() => createSimProvider({ schedule: manual.schedule }), { sources: ['sine:1'], flush: () => manual.tick() }, (ok, m) => {
+      if (!ok) failures.push(m);
+    });
+    expect(failures).toEqual([]);
   });
 
   it('flags an empty source list', async () => {

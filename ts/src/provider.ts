@@ -438,12 +438,30 @@ export interface ProviderConformanceOptions {
   context?: Partial<ProviderContext>;
   /** How long to wait for the first samples (default 2000 ms). */
   timeoutMs?: number;
+  /**
+   * Make the provider's fake backend deliver anything pending right now
+   * (advance fake timers, tick a manual schedule, flush a mock socket). Called
+   * before and after the quiet window that follows `unsubscribe`, so a leaked
+   * or late delivery is caught deterministically. Strongly recommended.
+   */
+  flush?: () => void | Promise<void>;
+  /**
+   * Real-time quiet window after `unsubscribe` (default 100 ms). It is
+   * stretched to three times the longest gap seen between deliveries, so
+   * slow-ticking providers are observed over several ticks. Bounded to
+   * 20 ms–10 s and independent of `timeoutMs`.
+   */
+  quietMs?: number;
 }
 
 /**
  * Conformance kit: every provider package runs this against its provider
  * (with a fake backend). Mirrors the registry's `runContributionKindConformance`.
  */
+/** Bounds of the post-unsubscribe quiet window (see `ProviderConformanceOptions.quietMs`). */
+const MIN_QUIET_MS = 20;
+const MAX_QUIET_MS = 10_000;
+
 export async function runProviderConformance(
   makeProvider: () => HolodeckProvider,
   options: ProviderConformanceOptions,
@@ -471,10 +489,12 @@ export async function runProviderConformance(
   // subscribe delivers a well-formed sample for every requested source
   const seen = new Map<string, Sample>();
   let calls = 0;
+  const deliveredAt: number[] = [];
   let resolveAll: () => void = () => {};
   const allSeen = new Promise<void>((resolve) => (resolveAll = resolve));
   const unsubscribe = session.subscribe(options.sources, (samples) => {
     calls++;
+    deliveredAt.push(Date.now());
     for (const s of samples) {
       assert(options.sources.includes(s.source), `sample source "${s.source}" was requested`);
       assert(isSignalValue(s.value), `sample value for "${s.source}" is a signal value`);
@@ -491,10 +511,18 @@ export async function runProviderConformance(
   clearTimeout(timer);
   assert(!timedOut, `every source delivered a sample within ${timeoutMs} ms`);
 
-  // unsubscribe stops delivery
+  // unsubscribe stops delivery: flush the backend, wait out several delivery
+  // gaps, flush again; any delivery in between is a leak (#25).
   unsubscribe();
   const after = calls;
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  const gaps = deliveredAt.slice(1).map((t, i) => t - (deliveredAt[i] as number));
+  // Independent of `timeoutMs` (the first-sample budget), and never shorter
+  // than v1.0's fixed 20 ms window, so no option makes the check weaker.
+  const quietMs = Math.min(MAX_QUIET_MS, Math.max(MIN_QUIET_MS, options.quietMs ?? 100, 3 * Math.max(0, ...gaps)));
+  await options.flush?.();
+  await new Promise((resolve) => setTimeout(resolve, quietMs));
+  await options.flush?.();
+  // Message text unchanged from v1.0 so existing consumers matching it keep working.
   assert(calls === after, 'no samples are delivered after unsubscribe');
   unsubscribe(); // idempotent
 

@@ -866,6 +866,61 @@ describe('ProviderHub with hostile ids (GPT review sdk#23 P1)', () => {
   });
 });
 
+describe('ProviderHub follow-ups (#24, #27)', () => {
+  it('#24: ids and sources containing NUL cannot collide', async () => {
+    const { provider, sessions } = fakeProvider('test.fake', { write: true });
+    const { hub } = setup([provider]);
+    hub.setConnections([conn('c')]);
+    hub.setBindings([bind('a\u0000b', 'c', 'c', 's1'), bind('a', 'b\u0000c', 'c', 's2')]);
+    await hub.settled();
+    sessions[0]!.emit([{ source: 's1', value: 1, ts: 1 }, { source: 's2', value: 2, ts: 1 }]);
+    expect(hub.getSnapshot().metrics).toEqual({ 'a\u0000b': { c: 1 }, a: { 'b\u0000c': 2 } });
+    await hub.write('a', 'b\u0000c', 5);
+    expect(sessions[0]!.write).toHaveBeenCalledWith('s2', 5);
+    // source lists ['x\u0000y'] and ['x', 'y'] are different subscriptions
+    hub.setBindings([bind('o', 'p', 'c', 'x\u0000y')]);
+    hub.setBindings([bind('o', 'p', 'c', 'x'), bind('o', 'q', 'c', 'y')]);
+    expect(sessions[0]!.subscribed.slice(-2)).toEqual([['x\u0000y'], ['x', 'y']]);
+  });
+
+  it('#27: a successful retry restores the session status; a genuine provider error is kept', async () => {
+    let failNext = true;
+    let providerState: ProviderStatus = { state: 'live', since: 0 };
+    const provider: HolodeckProvider = {
+      id: 'test.transitions',
+      label: 'Transitions only',
+      capabilities: {},
+      async connect() {
+        return {
+          status: () => providerState,
+          onStatus: () => () => {}, // emits only on transitions; none happen here
+          subscribe() {
+            if (failNext) {
+              failNext = false;
+              throw new Error('flaky');
+            }
+            return () => {};
+          },
+          close: async () => {},
+        };
+      },
+    };
+    const { hub } = setup([provider]);
+    hub.setConnections([conn('c', 'test.transitions')]);
+    await hub.settled();
+    hub.setBindings([bind('a', 'v', 'c', 's')]);
+    expect(hub.getSnapshot().connections.c?.status.state).toBe('error');
+    hub.setBindings([bind('a', 'v', 'c', 's')]);
+    expect(hub.getSnapshot().connections.c?.status).toEqual({ state: 'live', since: 0 });
+
+    failNext = true;
+    hub.setBindings([bind('a', 'v', 'c', 't')]);
+    providerState = { state: 'error', message: 'throttled', since: 3 };
+    hub.setBindings([bind('a', 'v', 'c', 't')]);
+    expect(hub.getSnapshot().connections.c?.status).toEqual({ state: 'error', message: 'throttled', since: 3 });
+  });
+});
+
 describe('invertTransform', () => {
   it('passes values through without a transform and keeps null', () => {
     expect(invertTransform(undefined, 3)).toBe(3);
@@ -877,5 +932,18 @@ describe('invertTransform', () => {
     expect(invertTransform(t, 2)).toBe(20);
     expect(invertTransform({ ...t, clamp: false }, 2)).toBe(30);
     expect(invertTransform({ ...t, outMin: 1, outMax: 1 }, 5)).toBe(10);
+  });
+  it('sdk#31 review: finite extrapolation near the limits can be written through', () => {
+    const t = { kind: 'scale', inMin: 0, inMax: 1, outMin: 1e308, outMax: 1.1e308, clamp: false } as const;
+    expect(invertTransform(t, 1e308 + 2 * (1.1e308 - 1e308))).toBeCloseTo(2, 10);
+    expect(invertTransform({ kind: 'scale', inMin: 0, inMax: 1, outMin: 0, outMax: Number.MIN_VALUE }, Number.MIN_VALUE)).toBe(1);
+  });
+
+  it('#28: stays finite for wide ranges and rejects values that cannot map', () => {
+    const wide = { kind: 'scale', inMin: -1e308, inMax: 1e308, outMin: 0, outMax: 1 } as const;
+    expect(invertTransform(wide, 0.5)).toBe(0);
+    expect(invertTransform(wide, 1)).toBe(1e308);
+    expect(() => invertTransform({ ...wide, clamp: false }, 1e300)).toThrow(/finite/);
+    expect(() => invertTransform(wide, Number.NaN)).toThrow(/finite number/);
   });
 });

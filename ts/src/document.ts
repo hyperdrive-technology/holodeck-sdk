@@ -15,6 +15,7 @@
 import { isDottedId, isFiniteNum, isNonEmptyStr, isObj, isSignalValue, isStr, isStrRecord } from './guards.js';
 import type { SignalValue } from './provider.js';
 import { isValidRange, isValidVersion } from './version.js';
+import { scaleNumber } from './math.js';
 
 export const HOLODECK_DOCUMENT_FORMAT = 'holodeck.document.v1';
 
@@ -116,11 +117,9 @@ export function applyTransform(transform: ValueTransform | undefined, value: Sig
     case 'scale': {
       const x = toNumber(value);
       if (x === null) return null;
-      const span = transform.inMax - transform.inMin;
-      // A zero-width input range has no slope: map everything to outMin.
-      const t = span === 0 ? 0 : (x - transform.inMin) / span;
-      const clamped = transform.clamp === false ? t : Math.min(1, Math.max(0, t));
-      return transform.outMin + clamped * (transform.outMax - transform.outMin);
+      // A zero-width input range has no slope: everything maps to outMin.
+      // Overflow-safe (math.ts); a non-finite result (unclamped extrapolation) is null.
+      return scaleNumber(x, transform.inMin, transform.inMax, transform.outMin, transform.outMax, transform.clamp !== false);
     }
     case 'threshold': {
       const x = toNumber(value);
@@ -238,7 +237,16 @@ export function validateHolodeckDocument(raw: unknown): string[] {
     }
   }
   if (!('body' in raw) || raw.body === undefined) errors.push('body: is required');
-  if (raw.metadata !== undefined && !isObj(raw.metadata)) errors.push('metadata: must be an object');
+  if (raw.metadata !== undefined) {
+    if (!isObj(raw.metadata)) errors.push('metadata: must be an object');
+    else {
+      for (const key of ['description', 'author', 'created', 'updated'] as const) {
+        if (raw.metadata[key] !== undefined && !isStr(raw.metadata[key])) errors.push(`metadata.${key}: must be a string`);
+      }
+      const tags = raw.metadata.tags;
+      if (tags !== undefined && !(Array.isArray(tags) && tags.every(isStr))) errors.push('metadata.tags: must be an array of strings');
+    }
+  }
   if (raw.extensions !== undefined && !isObj(raw.extensions)) errors.push('extensions: must be an object');
   return errors;
 }

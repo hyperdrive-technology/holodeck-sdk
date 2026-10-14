@@ -114,7 +114,7 @@ assets/                 GLB, SVG, PNG referenced by contributions
 | `engine` | Only on engine packages: `{ id, apiVersion, documentFormat }`. |
 | `providers` | Ids of the package's `holodeck.provider` items. Must match the extension exactly. |
 | `requires` | Other Holodeck packages that must be installed first (id → range). Forms a DAG. |
-| `permissions.network` | Origins providers may contact (`https://monitoring.*.amazonaws.com`). Each provider's `origins` must be covered. Hosts show these before install and may enforce them. |
+| `permissions.network` | Origins providers may contact (`https://monitoring.*.amazonaws.com`): `scheme://host[:port]`, no path. At most one wildcard label `*`, never one of the last two labels, so `https://*.com`, `https://example.*` and `https://a.*.*` are rejected. Each provider's `origins` must be covered. Hosts show these before install and may enforce them. |
 | `assetLicenses` | Assets under a different licence than `license`, for example vendor icon sets and their trademark notices. Hosts show `notice` in credits. |
 | `entry`, `assets` | Package-relative paths. No `..`, absolute paths or URLs. Also none of the things a URL parser would rewrite: `%` escapes, `\`, `?`, `#`, control characters, or surrounding whitespace. |
 
@@ -302,7 +302,9 @@ const snap = useSyncExternalStore(hub.subscribe, hub.getSnapshot);
 `createSimProvider()` (`holodeck.sim`) is the reference provider. Its waveforms (`sine:10`, `ramp:30:0:100`,
 `noise:7`) are pure functions of time, so `history` is exact. `mem:<name>` is writable. Hosts may install it
 as "demo data"; tests drive it with `createManualSchedule()`. Every provider package must pass
-`runProviderConformance(makeProvider, { sources, config }, assert)` against a fake backend in CI. Every kind
+`runProviderConformance(makeProvider, { sources, config, flush }, assert)` against a fake backend in CI.
+`flush` makes the fake backend deliver anything pending (tick fake timers). The kit calls it around the
+quiet window after `unsubscribe`, so a leaked subscription is caught deterministically. Every kind
 an engine registers must pass `runContributionKindConformance`.
 
 ### 6.5 Document checks (`holodeck.document.check`)
@@ -394,7 +396,21 @@ Rules:
 The host-side manifest section, install order and marketplace listing are specified by each host product.
 For Hyperdrive see core's `docs/EXTENSIONS_AND_LIBRARIES.md`.
 
-## 9. Conformance checklist
+## 9. Errors
+
+Hosts switch on `code`; messages are for people. Every error class lists all problems in `details`
+where there can be several.
+
+| Class | Codes |
+|---|---|
+| `HolodeckPackageError` (`HolodeckPackageErrorCode`) | `INVALID_MANIFEST`, `ASSET_ESCAPES_PACKAGE` |
+| `HolodeckHostError` (`HolodeckHostErrorCode`) | `INVALID_MANIFEST`, `MANIFEST_MISMATCH`, `DUPLICATE_PACKAGE`, `MISSING_REQUIREMENT`, `ENGINE_INCOMPATIBLE`, `INVALID_ENGINE`, `DUPLICATE_ENGINE`, `UNKNOWN_PACKAGE`, `REQUIRED_BY`, `VERSION_CONFLICT`, `NOT_OWNER`, `BUSY`, `CANCELLED` |
+| `ProviderHubError` (`ProviderHubErrorCode`) | `DISPOSED`, `UNBOUND`, `NOT_CONNECTED`, `NOT_WRITABLE`, `NOT_INVERTIBLE` |
+| `ContributionRegistryError` | `DUPLICATE_KIND`, `DUPLICATE_ID`, `INVALID_ITEM`, `DUPLICATE_EXTENSION`, `UNKNOWN_EXTENSION` |
+
+Malformed input to `ProviderHub.setConnections` / `setBindings` throws a `TypeError` listing every problem.
+
+## 10. Conformance checklist
 
 | Role | Must ship |
 |---|---|
@@ -403,7 +419,7 @@ For Hyperdrive see core's `docs/EXTENSIONS_AND_LIBRARIES.md`.
 | Provider | `runProviderConformance` against a fake backend; `permissions.network` covering `origins`; no secrets in `configSchema` |
 | Importer / check | Kind validator passes; fixture-based tests |
 
-## 10. Migration from the pre-v1 contracts
+## 11. Migration from the pre-v1 contracts
 
 | Old | New |
 |---|---|

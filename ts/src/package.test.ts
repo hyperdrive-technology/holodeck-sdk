@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   HOLODECK_PACKAGE_MANIFEST_FIELDS,
+  HolodeckPackageError,
   HOLODECK_PACKAGE_SCHEMA,
   checkExtensionMatchesManifest,
   defineHolodeckPackage,
@@ -79,6 +80,22 @@ describe('paths and origins', () => {
     ['ftp://example.com', false],
     ['https://', false],
     ['*.example.com', false],
+    // #29: the wildcard is one whole label, at most once, never in the last two labels
+    ['https://*.com', false],
+    ['https://example.*', false],
+    ['https://a.*.*', false],
+    ['https://*.*.example.com', false],
+    ['https://ex*ample.com', false],
+    ['https://*', false],
+    ['https://-bad.example.com', false],
+    ['https://Example.com', false],
+    ['https://a.*.example.com', true],
+    ['http://localhost', true],
+    // sdk#31 review: interior double hyphens are valid DNS labels (IDNA, real hosts)
+    ['https://xn--bcher-kva.example', true],
+    ['https://my--api.example.com', true],
+    ['https://*.xn--bcher-kva.example', true],
+    ['https://bad-.example.com', false],
   ])('isOriginPattern(%j) = %s', (o, ok) => {
     expect(isOriginPattern(o)).toBe(ok);
   });
@@ -89,6 +106,10 @@ describe('paths and origins', () => {
     expect(originMatches('https://*.amazonaws.com', 'https://evil.com')).toBe(false);
     expect(originMatches('https://a.com', 'https://a.com')).toBe(true);
     expect(originMatches('https://a.com', 'https://aXcom')).toBe(false);
+    // #29: invalid patterns match nothing, even literally
+    expect(originMatches('https://*.com', 'https://evil.com')).toBe(false);
+    expect(originMatches('https://*.com', 'https://*.com')).toBe(false);
+    expect(originMatches('https://example.*', 'https://example.evil')).toBe(false);
   });
 
   it('resolves assets inside the base and refuses escapes', () => {
@@ -96,6 +117,34 @@ describe('paths and origins', () => {
     expect(resolvePackageAsset('https://cdn.example/pkg/assets/', './a.glb')).toBe('https://cdn.example/pkg/assets/a.glb');
     expect(() => resolvePackageAsset('https://cdn.example/a/', '../b')).toThrow(/escapes/);
     expect(() => resolvePackageAsset('https://cdn.example/a/', 'https://evil/x')).toThrow(/escapes/);
+  });
+
+  it('#30 compat: the original (message, details?) signature still works in TS and plain JS', () => {
+    const plain = new HolodeckPackageError('plain');
+    expect(plain).toMatchObject({ code: 'PACKAGE_ERROR', details: [], message: 'plain' });
+    const withDetails = new HolodeckPackageError('bad', ['a', 'b']);
+    expect(withDetails).toMatchObject({ code: 'PACKAGE_ERROR', details: ['a', 'b'], message: 'bad:\n- a\n- b' });
+    // What an untyped JS caller passing (message, details) gets:
+    const Ctor = HolodeckPackageError as unknown as new (...args: unknown[]) => HolodeckPackageError;
+    expect(new Ctor('js', ['x'])).toMatchObject({ code: 'PACKAGE_ERROR', details: ['x'] });
+    expect(new HolodeckPackageError('coded', 'INVALID_MANIFEST', ['y'])).toMatchObject({ code: 'INVALID_MANIFEST', details: ['y'] });
+    expect(plain).toBeInstanceOf(Error);
+    expect(plain.name).toBe('HolodeckPackageError');
+  });
+
+  it('#30: package errors carry a code', () => {
+    try {
+      resolvePackageAsset('https://cdn.example/a/', '../b');
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toMatchObject({ name: 'HolodeckPackageError', code: 'ASSET_ESCAPES_PACKAGE', details: [] });
+    }
+    try {
+      parseHolodeckPackageManifest({});
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toMatchObject({ name: 'HolodeckPackageError', code: 'INVALID_MANIFEST' });
+    }
   });
 
   it('keeps resolved assets under the base (GPT review sdk#23 P1)', () => {

@@ -44,6 +44,45 @@ describe('applyTransform', () => {
       expect(applyTransform(t, 'abc')).toBeNull();
       expect(applyTransform(t, '  ')).toBeNull();
     });
+    it('#28: stays finite across the whole double range', () => {
+      const wide: ValueTransform = { kind: 'scale', inMin: 0, inMax: 1, outMin: -1e308, outMax: 1e308 };
+      expect(applyTransform(wide, 0)).toBe(-1e308);
+      expect(applyTransform(wide, 0.5)).toBe(0);
+      expect(applyTransform(wide, 1)).toBe(1e308);
+      const wideIn: ValueTransform = { kind: 'scale', inMin: -1e308, inMax: 1e308, outMin: 0, outMax: 1 };
+      expect(applyTransform(wideIn, 0)).toBe(0.5);
+      expect(applyTransform({ ...wide, clamp: false }, 1e300)).toBeNull(); // extrapolates past MAX_VALUE
+    });
+
+    it('sdk#31 review: subnormal ranges and finite extrapolation near the limits behave as on main', () => {
+      expect(applyTransform({ kind: 'scale', inMin: 0, inMax: Number.MIN_VALUE, outMin: 0, outMax: 1 }, Number.MIN_VALUE)).toBe(1);
+      expect(applyTransform({ kind: 'scale', inMin: 0, inMax: 1, outMin: 1e308, outMax: 1.1e308, clamp: false }, 2)).toBe(1e308 + 2 * (1.1e308 - 1e308));
+    });
+
+    it('matches main\'s formula wherever main was finite (seeded sweep)', () => {
+      // main: t = span === 0 ? 0 : (x - inMin) / span; out = outMin + clamp(t) * (outMax - outMin)
+      const mainScale = (x: number, a: number, b: number, c: number, d: number, clamp: boolean) => {
+        const span = b - a;
+        const t = span === 0 ? 0 : (x - a) / span;
+        const tt = clamp ? Math.min(1, Math.max(0, t)) : t;
+        return c + tt * (d - c);
+      };
+      let seed = 12345;
+      const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+      const magnitudes = [1e-310, 1e-12, 1, 1e6, 1e150, 1e300, 1e307];
+      const pick = () => (rnd() - 0.5) * 2 * (magnitudes[Math.floor(rnd() * magnitudes.length)] as number);
+      let compared = 0;
+      for (let i = 0; i < 20000; i++) {
+        const [x, a, b, c, d] = [pick(), pick(), pick(), pick(), pick()];
+        const clamp = rnd() < 0.5;
+        const expected = mainScale(x, a, b, c, d, clamp);
+        if (!Number.isFinite(expected)) continue;
+        compared++;
+        expect(applyTransform({ kind: 'scale', inMin: a, inMax: b, outMin: c, outMax: d, clamp }, x)).toBe(expected);
+      }
+      expect(compared).toBeGreaterThan(10000);
+    });
+
     it('maps a zero-width input range to outMin', () => {
       expect(applyTransform({ ...t, inMin: 5, inMax: 5, outMin: 3 }, 9)).toBe(3);
     });
@@ -170,6 +209,18 @@ describe('validateHolodeckDocument', () => {
         expect.stringMatching(/^extensions/),
       ]),
     );
+  });
+
+  it('#26: validates metadata field types', () => {
+    expect(validateHolodeckDocument(doc({ metadata: { description: 'd', author: 'a', created: 'c', updated: 'u', tags: ['x'] } }))).toEqual([]);
+    expect(validateHolodeckDocument(doc({ metadata: { tags: 7, author: 1, created: {}, description: false, updated: [] } }))).toEqual([
+      'metadata.description: must be a string',
+      'metadata.author: must be a string',
+      'metadata.created: must be a string',
+      'metadata.updated: must be a string',
+      'metadata.tags: must be an array of strings',
+    ]);
+    expect(validateHolodeckDocument(doc({ metadata: { tags: ['ok', 3] } }))).toEqual(['metadata.tags: must be an array of strings']);
   });
 
   it('rejects non-objects and non-string requires values', () => {
