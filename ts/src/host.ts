@@ -53,7 +53,8 @@ export type HolodeckHostErrorCode =
   | 'REQUIRED_BY'
   | 'VERSION_CONFLICT'
   | 'NOT_OWNER'
-  | 'BUSY';
+  | 'BUSY'
+  | 'CANCELLED';
 
 export class HolodeckHostError extends Error {
   constructor(
@@ -123,16 +124,20 @@ export class HolodeckHost {
   readonly name: string;
   private readonly engineTable = new Map<string, HolodeckEngine>();
   private readonly installed = new Map<string, InstalledPackage>();
-  private readonly installing = new Set<string>();
   /**
-   * Packages inside `registry.install` / `registry.uninstall`. Registry hooks
-   * and subscribers run in there, before `installed` is updated, and may call
-   * back into the host: these sets make such re-entrant calls see the
-   * operation in flight (a committing package's `requires` hold; a package
-   * being removed cannot be required, shared or removed again).
+   * Installs between their first check and their commit (they may await
+   * `createExtension`). `uninstallOwnedBy(owner)` cancels the owner's.
    */
-  private readonly committing = new Map<string, HolodeckPackageManifest>();
-  private readonly removing = new Set<string>();
+  private readonly installing = new Map<string, { owner: string; cancelled: boolean }>();
+  /**
+   * Mutation lock. Every mutation (engine register/unregister, package
+   * install commit/share/uninstall, uninstallOwnedBy) is one synchronous
+   * transaction. Registry hooks and subscribers run inside it, so a mutation
+   * attempted from one of them throws `BUSY`; read-only calls are fine.
+   * Callbacks that need to change the host must do so after the call returns
+   * (e.g. `queueMicrotask`).
+   */
+  private lock: string | undefined;
 
   constructor(options: HolodeckHostOptions) {
     this.name = options.name;
@@ -161,48 +166,52 @@ export class HolodeckHost {
   registerEngine(engine: HolodeckEngine): () => void {
     const errors = validateEngine(engine);
     if (errors.length) throw new HolodeckHostError(`invalid engine`, 'INVALID_ENGINE', errors);
-    if (this.engineTable.has(engine.id)) {
-      throw new HolodeckHostError(`engine "${engine.id}" is already registered`, 'DUPLICATE_ENGINE');
-    }
-    const incompatible = [...this.installed.values()]
-      .filter(({ manifest }) => {
-        const range = manifest.engines?.[engine.id];
-        return range !== undefined && !satisfiesRange(engine.apiVersion, range);
-      })
-      .map(({ manifest }) => `${manifest.id} needs ${engine.id} ${manifest.engines?.[engine.id]}`);
-    if (incompatible.length) {
-      throw new HolodeckHostError(
-        `engine "${engine.id}" ${engine.apiVersion} is incompatible with installed packages`,
-        'ENGINE_INCOMPATIBLE',
-        incompatible,
-      );
-    }
-    const offs: Array<() => void> = [];
-    try {
-      for (const kind of engine.kinds) {
-        if (!this.registry.hasKind(kind.kind)) offs.push(this.registry.registerKind(kind));
+    return this.transaction(`register engine "${engine.id}"`, () => {
+      if (this.engineTable.has(engine.id)) {
+        throw new HolodeckHostError(`engine "${engine.id}" is already registered`, 'DUPLICATE_ENGINE');
       }
-    } catch (error) {
-      // Either a pending item failed validation (nothing committed for that
-      // kind) or a replay hook threw after the kind committed: the registry
-      // then hands back its unregister function on the error. Undo every kind
-      // this call registered so a retry starts clean.
-      if (error instanceof KindRegistrationError) offs.push(error.unregister);
-      const cleanupErrors = runAll(offs);
-      if (cleanupErrors.length) {
-        throw new AggregateError([error, ...cleanupErrors], `engine "${engine.id}" failed to register and cleanup also failed`);
+      const incompatible = [...this.installed.values()]
+        .filter(({ manifest }) => {
+          const range = manifest.engines?.[engine.id];
+          return range !== undefined && !satisfiesRange(engine.apiVersion, range);
+        })
+        .map(({ manifest }) => `${manifest.id} needs ${engine.id} ${manifest.engines?.[engine.id]}`);
+      if (incompatible.length) {
+        throw new HolodeckHostError(
+          `engine "${engine.id}" ${engine.apiVersion} is incompatible with installed packages`,
+          'ENGINE_INCOMPATIBLE',
+          incompatible,
+        );
       }
-      throw error;
-    }
-    this.engineTable.set(engine.id, engine);
-    return () => {
-      if (this.engineTable.get(engine.id) !== engine) return;
-      this.engineTable.delete(engine.id);
-      // Every kind must go even if an unregister callback throws, or a
-      // replacement engine would adopt the stale definitions.
-      const errors = runAll(offs);
-      if (errors.length) throw new AggregateError(errors, `engine "${engine.id}" unregistered, but callbacks failed`);
-    };
+      const offs: Array<() => void> = [];
+      try {
+        for (const kind of engine.kinds) {
+          if (!this.registry.hasKind(kind.kind)) offs.push(this.registry.registerKind(kind));
+        }
+      } catch (error) {
+        // Either a pending item failed validation (nothing committed for that
+        // kind) or a replay hook threw after the kind committed: the registry
+        // then hands back its unregister function on the error. Undo every kind
+        // this call registered so a retry starts clean.
+        if (error instanceof KindRegistrationError) offs.push(error.unregister);
+        const cleanupErrors = runAll(offs);
+        if (cleanupErrors.length) {
+          throw new AggregateError([error, ...cleanupErrors], `engine "${engine.id}" failed to register and cleanup also failed`);
+        }
+        throw error;
+      }
+      this.engineTable.set(engine.id, engine);
+      return () =>
+        this.transaction(`unregister engine "${engine.id}"`, () => {
+          if (this.engineTable.get(engine.id) !== engine) return;
+          this.engineTable.delete(engine.id);
+          // Every kind must go even if an unregister callback throws, or a
+          // replacement engine would adopt the stale definitions. The lock
+          // keeps replacements out until this finishes.
+          const failures = runAll(offs);
+          if (failures.length) throw new AggregateError(failures, `engine "${engine.id}" unregistered, but callbacks failed`);
+        });
+    });
   }
 
   engine(id: string): HolodeckEngine | undefined {
@@ -241,21 +250,22 @@ export class HolodeckHost {
     if (options.range !== undefined && !isValidRange(options.range)) {
       throw new HolodeckHostError(`unsupported version range "${options.range}"`, 'INVALID_MANIFEST');
     }
+    this.assertUnlocked(`install package "${id}"`);
     if (this.installing.has(id)) {
       throw new HolodeckHostError(`package "${id}" is being installed`, 'DUPLICATE_PACKAGE');
     }
-    if (this.removing.has(id)) {
-      throw new HolodeckHostError(`package "${id}" is being removed`, 'BUSY');
-    }
     const existing = this.installed.get(id);
-    if (existing) return this.share(existing, manifest, owner, options.range);
+    if (existing) {
+      return this.transaction(`share package "${id}"`, () => this.share(existing, manifest, owner, options.range));
+    }
     if (options.range !== undefined && !satisfiesRange(manifest.version, options.range)) {
       throw new HolodeckHostError(`package "${id}" does not satisfy the requested range`, 'VERSION_CONFLICT', [
         `${owner} needs ${id} ${options.range}, offered ${manifest.version}`,
       ]);
     }
 
-    this.installing.add(id);
+    const pending = { owner, cancelled: false };
+    this.installing.set(id, pending);
     try {
       this.assertInstallable(manifest);
       const ext = isExtension(source) ? source : await source.createExtension(this.packageContext(manifest, options));
@@ -269,28 +279,30 @@ export class HolodeckHost {
         throw new HolodeckHostError(`package "${id}" does not match its manifest`, 'MANIFEST_MISMATCH', mismatch);
       }
 
-      // createExtension may have awaited: packages may have been removed or
-      // engines registered meanwhile. Check again immediately before commit.
-      const unresolvedEngines = this.assertInstallable(manifest);
-
-      const record: InstalledPackage = { manifest, owners: [owner] };
-      let install: InstallResult;
-      this.committing.set(id, manifest);
-      try {
-        install = this.registry.install(ext);
-      } catch (error) {
-        // Only an AggregateError after *this* extension committed (a hook
-        // threw) is ours to record. Anything else, such as a DUPLICATE_EXTENSION
-        // from an extension installed in the shared registry outside this
-        // host, leaves the host's books untouched.
-        const committed = this.registry.installedExtensions().find((e) => e.id === id) === ext;
-        if (error instanceof AggregateError && committed) this.installed.set(id, record);
-        throw error;
-      } finally {
-        this.committing.delete(id);
-      }
-      this.installed.set(id, record);
-      return { packageId: id, shared: false, install, unresolvedEngines };
+      return this.transaction(`install package "${id}"`, () => {
+        if (pending.cancelled) {
+          throw new HolodeckHostError(`installing "${id}" was cancelled`, 'CANCELLED', [`its owner ${owner} was removed meanwhile`]);
+        }
+        // createExtension may have awaited: packages may have been removed or
+        // engines registered meanwhile. Check again immediately before commit.
+        const unresolvedEngines = this.assertInstallable(manifest);
+        const record: InstalledPackage = { manifest, owners: [owner] };
+        let install: InstallResult;
+        try {
+          install = this.registry.install(ext);
+        } catch (error) {
+          // Only an AggregateError after *this* extension committed (a hook
+          // threw) is ours to record. Anything else, such as a DUPLICATE_EXTENSION
+          // from an extension installed in the shared registry outside this
+          // host, leaves the host's books untouched.
+          const committed = this.registry.installedExtensions().find((e) => e.id === id) === ext;
+          if (error instanceof AggregateError && committed) this.installed.set(id, record);
+          throw error;
+        }
+        this.installed.set(id, record);
+        const report: PackageInstallReport = { packageId: id, shared: false, install, unresolvedEngines };
+        return report;
+      });
     } finally {
       this.installing.delete(id);
     }
@@ -304,24 +316,25 @@ export class HolodeckHost {
    * still require it. Packages other owners hold are kept (`kept`).
    */
   uninstallPackage(id: string): PackageRemovalReport {
-    const pkg = this.installed.get(id);
-    if (!pkg) throw new HolodeckHostError(`package "${id}" is not installed`, 'UNKNOWN_PACKAGE');
-    if (this.removing.has(id)) throw new HolodeckHostError(`package "${id}" is being removed`, 'BUSY');
-    if (!pkg.owners.includes(USER_OWNER)) {
-      throw new HolodeckHostError(`package "${id}" was not installed by the user`, 'NOT_OWNER', [
-        `owned by ${pkg.owners.join(', ') || 'nobody (kept alive by requirements)'}`,
-      ]);
-    }
-    const remaining = pkg.owners.filter((o) => o !== USER_OWNER);
-    if (!remaining.length) {
-      const requirers = this.requirersOf(id);
-      if (requirers.length) {
-        throw new HolodeckHostError(`package "${id}" is still required`, 'REQUIRED_BY', requirers.map((r) => `${r} requires ${id}`));
+    return this.transaction(`uninstall package "${id}"`, () => {
+      const pkg = this.installed.get(id);
+      if (!pkg) throw new HolodeckHostError(`package "${id}" is not installed`, 'UNKNOWN_PACKAGE');
+      if (!pkg.owners.includes(USER_OWNER)) {
+        throw new HolodeckHostError(`package "${id}" was not installed by the user`, 'NOT_OWNER', [
+          `owned by ${pkg.owners.join(', ') || 'nobody (kept alive by requirements)'}`,
+        ]);
       }
-    }
-    this.installed.set(id, { ...pkg, owners: remaining });
-    const removed = this.collectGarbage();
-    return { removed, kept: removed.includes(id) ? [] : [id] };
+      const remaining = pkg.owners.filter((o) => o !== USER_OWNER);
+      if (!remaining.length) {
+        const requirers = this.requirersOf(id);
+        if (requirers.length) {
+          throw new HolodeckHostError(`package "${id}" is still required`, 'REQUIRED_BY', requirers.map((r) => `${r} requires ${id}`));
+        }
+      }
+      this.installed.set(id, { ...pkg, owners: remaining });
+      const removed = this.collectGarbage();
+      return { removed, kept: removed.includes(id) ? [] : [id] };
+    });
   }
 
   /**
@@ -331,14 +344,19 @@ export class HolodeckHost {
    * or other extensions hold, or that installed packages require, are kept.
    */
   uninstallOwnedBy(owner: string): PackageRemovalReport {
-    const released: string[] = [];
-    for (const [id, pkg] of this.installed) {
-      if (!pkg.owners.includes(owner)) continue;
-      this.installed.set(id, { ...pkg, owners: pkg.owners.filter((o) => o !== owner) });
-      released.push(id);
-    }
-    const removed = this.collectGarbage();
-    return { removed, kept: released.filter((id) => !removed.includes(id)) };
+    return this.transaction(`uninstall packages owned by "${owner}"`, () => {
+      // Installs for this owner still awaiting their entry module must not
+      // commit afterwards with an owner that no longer exists.
+      for (const pending of this.installing.values()) if (pending.owner === owner) pending.cancelled = true;
+      const released: string[] = [];
+      for (const [id, pkg] of this.installed) {
+        if (!pkg.owners.includes(owner)) continue;
+        this.installed.set(id, { ...pkg, owners: pkg.owners.filter((o) => o !== owner) });
+        released.push(id);
+      }
+      const removed = this.collectGarbage();
+      return { removed, kept: released.filter((id) => !removed.includes(id)) };
+    });
   }
 
   packages(): InstalledPackage[] {
@@ -408,7 +426,6 @@ export class HolodeckHost {
       ]);
     }
     const missing = Object.entries(manifest.requires ?? {}).flatMap(([dep, range]) => {
-      if (this.removing.has(dep)) return [`${dep} ${range} is being removed`];
       const have = this.installed.get(dep)?.manifest.version;
       if (have === undefined) return [`${dep} ${range} is not installed`];
       return satisfiesRange(have, range) ? [] : [`${dep} ${range} is required, ${have} is installed`];
@@ -456,10 +473,28 @@ export class HolodeckHost {
     return { packageId: id, shared: true, unresolvedEngines: [] };
   }
 
-  /** Installed and committing packages that require `id`. */
+  /** Installed packages that require `id`. */
   private requirersOf(id: string): string[] {
-    const manifests = [...this.installed].map(([other, p]) => [other, p.manifest] as const).concat([...this.committing]);
-    return manifests.filter(([, m]) => m.requires?.[id] !== undefined).map(([other]) => other);
+    return [...this.installed].filter(([, p]) => p.manifest.requires?.[id] !== undefined).map(([other]) => other);
+  }
+
+  /** Run one mutation under the host lock; a mutation from inside it (a hook or subscriber) throws `BUSY`. */
+  private transaction<T>(what: string, fn: () => T): T {
+    this.assertUnlocked(what);
+    this.lock = what;
+    try {
+      return fn();
+    } finally {
+      this.lock = undefined;
+    }
+  }
+
+  private assertUnlocked(what: string): void {
+    if (this.lock !== undefined) {
+      throw new HolodeckHostError(`cannot ${what} while "${this.lock}" is in progress`, 'BUSY', [
+        'host mutations from registry hooks or subscribers are not allowed; defer them until the call returns',
+      ]);
+    }
   }
 
   /**
@@ -471,9 +506,7 @@ export class HolodeckHost {
     const removed: string[] = [];
     const hookErrors: unknown[] = [];
     for (;;) {
-      const orphan = [...this.installed].find(
-        ([id, p]) => !p.owners.length && !this.removing.has(id) && !this.requirersOf(id).length,
-      )?.[0];
+      const orphan = [...this.installed].find(([id, p]) => !p.owners.length && !this.requirersOf(id).length)?.[0];
       if (orphan === undefined) break;
       try {
         this.removeFromRegistry(orphan);
@@ -490,11 +523,9 @@ export class HolodeckHost {
   }
 
   private removeFromRegistry(id: string): void {
-    this.removing.add(id);
     try {
       this.registry.uninstall(id);
     } finally {
-      this.removing.delete(id);
       // An AggregateError from uninstall hooks still means the uninstall committed.
       if (!this.registry.installedExtensions().some((e) => e.id === id)) this.installed.delete(id);
     }

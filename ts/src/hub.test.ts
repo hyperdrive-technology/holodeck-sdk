@@ -462,6 +462,49 @@ describe('ProviderHub disposal waits for every close (GPT review sdk#23 r2 P2)',
   });
 });
 
+describe('ProviderHub session setup failures (GPT review sdk#23 r3 P2)', () => {
+  const broken = (fail: 'status' | 'onStatus'): { provider: HolodeckProvider; closed: () => boolean } => {
+    let closed = false;
+    return {
+      closed: () => closed,
+      provider: {
+        id: 'test.broken',
+        label: 'Broken',
+        capabilities: {},
+        async connect() {
+          return {
+            status: () => {
+              if (fail === 'status') throw new Error('status exploded');
+              return { state: 'live', since: 0 };
+            },
+            onStatus: () => {
+              if (fail === 'onStatus') throw new Error('onStatus exploded');
+              return () => {};
+            },
+            subscribe: () => () => {},
+            close: async () => {
+              closed = true;
+            },
+          };
+        },
+      },
+    };
+  };
+
+  it.each(['status', 'onStatus'] as const)('a throwing %s() closes the session, reports error and settles', async (fail) => {
+    const b = broken(fail);
+    const { hub, log } = setup([b.provider]);
+    hub.setConnections([conn('c', 'test.broken')]);
+    hub.setBindings([bind('a', 'v', 'c', 's')]);
+    await hub.settled();
+    expect(hub.getSnapshot().connections.c?.status).toMatchObject({ state: 'error', message: `session setup failed: ${fail} exploded` });
+    expect(hub.session('c')).toBeUndefined();
+    await hub.dispose();
+    expect(b.closed()).toBe(true);
+    expect(log).toHaveBeenCalledWith('warn', 'connection "c" setup failed', expect.any(Error));
+  });
+});
+
 describe('ProviderHub with hostile ids (GPT review sdk#23 P1)', () => {
   it('never writes through __proto__ object ids, params or connection ids', async () => {
     const { provider, sessions } = fakeProvider();

@@ -190,9 +190,14 @@ first:
 
 Both return `{ removed, kept }`. This is what makes embedding in host extensions work (§8).
 
-Registry hooks and subscribers run inside the host's install/uninstall, so the host treats the
-operation as in flight. A package being committed counts as a requirer. A package being removed cannot
-be required, shared or removed again; such calls fail with `MISSING_REQUIREMENT` or `BUSY`.
+**Mutations are transactions.** Every host mutation runs as one synchronous transaction under a single
+lock: engine registration and teardown, the commit (or share) step of an install, `uninstallPackage`
+and `uninstallOwnedBy`. Registry hooks and subscribers run inside that transaction, so a mutation
+attempted from one of them throws `BUSY`. Read-only calls (`packages()`, `engine()`, registry lookups)
+are fine. A callback that needs to change the host defers the change until the call returns, for
+example with `queueMicrotask`. An install's async part (awaiting `createExtension`) holds no lock: its
+checks run again inside the commit transaction. If `uninstallOwnedBy(owner)` runs while one of that
+owner's installs is still awaiting, the install fails with `CANCELLED`.
 
 Registry semantics (duplicate ids are errors, pending kinds, hooks after commit) are unchanged: see the
 README's "Registry behaviour".

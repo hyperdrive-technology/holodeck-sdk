@@ -305,8 +305,10 @@ export class ProviderHub {
         this.publish();
       },
     );
-    this.pending.add(settled);
-    void settled.finally(() => this.pending.delete(settled));
+    // Handlers above do not throw, but never let a bug surface as an unhandled rejection.
+    const guarded = settled.catch((error: unknown) => this.log('error', `connection "${def.id}" handler failed`, error));
+    this.pending.add(guarded);
+    void guarded.finally(() => this.pending.delete(guarded));
   }
 
   private onConnected(id: string, slot: Slot, session: ProviderSession): void {
@@ -315,13 +317,22 @@ export class ProviderHub {
       this.trackClose(() => session.close(), `closing superseded "${id}" failed`);
       return;
     }
-    slot.session = session;
-    slot.status = session.status();
-    slot.offStatus = session.onStatus((status) => {
-      if (!this.isCurrent(id, slot)) return;
-      slot.status = status;
+    try {
+      slot.status = session.status();
+      slot.offStatus = session.onStatus((status) => {
+        if (!this.isCurrent(id, slot)) return;
+        slot.status = status;
+        this.publish();
+      });
+    } catch (error) {
+      // A session that cannot report status is unusable: close it, show the error.
+      slot.status = { state: 'error', message: `session setup failed: ${errorMessage(error)}`, since: this.now() };
+      this.log('warn', `connection "${id}" setup failed`, error);
+      this.trackClose(() => session.close(), `closing failed session "${id}" failed`);
       this.publish();
-    });
+      return;
+    }
+    slot.session = session;
     this.resubscribe(slot);
     this.publish();
   }

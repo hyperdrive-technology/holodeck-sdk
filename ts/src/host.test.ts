@@ -460,7 +460,7 @@ describe('HolodeckHost', () => {
         manifest({ id: 'holodeck.aws', contributes: ['holodeck.iso.theme'], requires: { 'holodeck.cloud': '^0.1' } }),
         ext('holodeck.aws', '0.1.0', { 'holodeck.iso.theme': [{ id: 'aws-theme' }] }),
       );
-      expect(hookError).toMatchObject({ code: 'REQUIRED_BY', details: ['holodeck.aws requires holodeck.cloud'] });
+      expect(hookError).toMatchObject({ code: 'BUSY' });
       expect(host.package('holodeck.cloud')).toBeDefined();
       expect(host.package('holodeck.aws')).toBeDefined();
     });
@@ -490,7 +490,7 @@ describe('HolodeckHost', () => {
       await host.installPackage(manifest({ contributes: ['holodeck.iso.theme'] }), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.theme': [{ id: 't' }] }));
       expect(host.uninstallPackage('holodeck.cloud')).toEqual({ removed: ['holodeck.cloud'], kept: [] });
       const [requiring, sharing] = await Promise.allSettled(attempts);
-      expect(requiring).toMatchObject({ status: 'rejected', reason: { code: 'MISSING_REQUIREMENT', details: ['holodeck.cloud ^0.1 is being removed'] } });
+      expect(requiring).toMatchObject({ status: 'rejected', reason: { code: 'BUSY' } });
       expect(sharing).toMatchObject({ status: 'rejected', reason: { code: 'BUSY' } });
       expect(sync).toEqual([expect.objectContaining({ code: 'BUSY' })]);
       expect(host.packages()).toEqual([]);
@@ -531,6 +531,108 @@ describe('HolodeckHost', () => {
       expect((thrown as AggregateError).errors[0]).toMatchObject({ code: 'INVALID_ITEM' });
       expect(host.registry.hasKind('holodeck.iso.theme')).toBe(false);
       expect(host.engine('holodeck.iso')).toBeUndefined();
+    });
+  });
+
+  describe('GPT review sdk#23 r3 regressions (host mutation lock)', () => {
+    it('P1: an install hook cannot register an engine incompatible with the committing package', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      let hookError: unknown;
+      host.registry.registerKind({
+        kind: 'holodeck.iso.theme',
+        onInstall: () => {
+          try {
+            host.registerEngine(isoEngine('2.0.0'));
+          } catch (error) {
+            hookError = error;
+          }
+        },
+      });
+      await host.installPackage(manifest({ contributes: ['holodeck.iso.theme'] }), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.theme': [{ id: 't' }] }));
+      expect(hookError).toMatchObject({ code: 'BUSY' });
+      expect(host.engine('holodeck.iso')).toBeUndefined();
+      expect(() => host.registerEngine(isoEngine('2.0.0'))).toThrow(expect.objectContaining({ code: 'ENGINE_INCOMPATIBLE' }));
+    });
+
+    it('P1: an engine replay hook cannot install a package incompatible with the registering engine', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest({ contributes: ['holodeck.iso.theme'] }), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.theme': [{ id: 't' }] }));
+      let attempt: Promise<unknown> | undefined;
+      const theme: ContributionKind = {
+        kind: 'holodeck.iso.theme',
+        onInstall: () => {
+          attempt = host.installPackage(manifest({ id: 'holodeck.v3', engines: { 'holodeck.iso': '^3.0' } }), ext('holodeck.v3', '0.1.0', {}));
+        },
+      };
+      host.registerEngine({ ...isoEngine('1.2.0'), kinds: [partKind, theme] });
+      await expect(attempt).rejects.toMatchObject({ code: 'BUSY' });
+      expect(host.package('holodeck.v3')).toBeUndefined();
+    });
+
+    it('P2: a subscriber cannot replace an engine during its teardown; every old kind is removed first', () => {
+      const host = new HolodeckHost({ name: 't' });
+      const off = host.registerEngine(isoEngine());
+      let replaceError: unknown;
+      const unsubscribe = host.registry.subscribe((change) => {
+        if (change.type !== 'kind-unregistered' || change.kind !== 'holodeck.iso.part') return;
+        try {
+          host.registerEngine(isoEngine('1.3.0'));
+        } catch (error) {
+          replaceError = error;
+        }
+      });
+      off();
+      unsubscribe();
+      expect(replaceError).toMatchObject({ code: 'BUSY' });
+      expect(host.registry.hasKind('holodeck.iso.part')).toBe(false);
+      expect(host.registry.hasKind('holodeck.iso.theme')).toBe(false);
+      host.registerEngine(isoEngine('1.3.0'));
+      expect(host.engine('holodeck.iso')?.apiVersion).toBe('1.3.0');
+      expect(host.registry.hasKind('holodeck.iso.theme')).toBe(true);
+    });
+
+    it('P2: an install hook cannot release the committing package\'s owner', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      let hookError: unknown;
+      host.registry.registerKind({
+        kind: 'holodeck.iso.theme',
+        onInstall: () => {
+          try {
+            host.uninstallOwnedBy('ext.a');
+          } catch (error) {
+            hookError = error;
+          }
+        },
+      });
+      await host.installPackage(manifest({ contributes: ['holodeck.iso.theme'] }), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.theme': [{ id: 't' }] }), {
+        owner: 'ext.a',
+      });
+      expect(hookError).toMatchObject({ code: 'BUSY' });
+      expect(host.uninstallOwnedBy('ext.a')).toEqual({ removed: ['holodeck.cloud'], kept: [] });
+    });
+
+    it('P2: removing an owner cancels its installs still awaiting their entry module', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((r) => (release = r));
+      const pending = host.installPackage(manifest(), { createExtension: async () => (await gate, ext('holodeck.cloud', '0.1.0', {})) }, { owner: 'ext.a' });
+      expect(host.uninstallOwnedBy('ext.a')).toEqual({ removed: [], kept: [] });
+      release();
+      await expect(pending).rejects.toMatchObject({ code: 'CANCELLED', details: ['its owner ext.a was removed meanwhile'] });
+      expect(host.packages()).toEqual([]);
+      expect(host.registry.installedExtensions()).toEqual([]);
+      // a different owner's pending install is unaffected
+      const other = host.installPackage(manifest(), { createExtension: async () => ext('holodeck.cloud', '0.1.0', {}) }, { owner: 'ext.b' });
+      host.uninstallOwnedBy('ext.a');
+      await expect(other).resolves.toMatchObject({ shared: false });
+    });
+
+    it('read-only calls are allowed inside hooks', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const seen: number[] = [];
+      host.registry.registerKind({ kind: 'holodeck.iso.theme', onInstall: () => seen.push(host.packages().length, host.engines().length) });
+      await host.installPackage(manifest({ contributes: ['holodeck.iso.theme'] }), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.theme': [{ id: 't' }] }));
+      expect(seen).toEqual([0, 0]);
     });
   });
 
