@@ -453,8 +453,9 @@ export interface ProviderConformanceOptions {
    */
   quietMs?: number;
   /**
-   * How the kit waits for the quiet window (default: a real `setTimeout`).
-   * Under fake timers pass e.g. `(ms) => vi.advanceTimersByTimeAsync(ms)`.
+   * How the kit waits out the quiet window (default: a real `setTimeout`).
+   * **Required under fake timers**, where a real timer never fires: pass e.g.
+   * `(ms) => vi.advanceTimersByTimeAsync(ms)`.
    */
   wait?: (ms: number) => Promise<void>;
 }
@@ -524,11 +525,11 @@ export async function runProviderConformance(
   // Independent of `timeoutMs` (the first-sample budget), and never shorter
   // than v1.0's fixed 20 ms window, so no option makes the check weaker.
   const quietMs = Math.min(MAX_QUIET_MS, Math.max(MIN_QUIET_MS, options.quietMs ?? 100, 3 * Math.max(0, ...gaps)));
-  // Start the wait before the first flush (#33): a flush that advances fake
-  // timers then also advances this wait instead of deadlocking on it.
-  const quiet = options.wait ? undefined : new Promise<void>((resolve) => setTimeout(resolve, quietMs));
+  // Full quiet window *after* the first flush completes, as on v1.0: an async
+  // flush must not eat into the observation time (sdk#34 review). Under fake
+  // timers a real setTimeout never fires, so pass `wait` (#33).
   await options.flush?.();
-  await (options.wait ? options.wait(quietMs) : quiet);
+  await (options.wait ? options.wait(quietMs) : new Promise<void>((resolve) => setTimeout(resolve, quietMs)));
   await options.flush?.();
   // Message text unchanged from v1.0 so existing consumers matching it keep working.
   assert(calls === after, 'no samples are delivered after unsubscribe');
