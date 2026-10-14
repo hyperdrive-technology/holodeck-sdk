@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hyperdrive-technology/holodeck-sdk/schema/holodeck-document.v1.schema.json",
+  "title": "Holodeck document envelope",
+  "description": "One envelope for every engine; the engine owns `body`. Contract: docs/PACKAGING.md §5. Bindings live inside the body (engine-specific) and use the signalBinding shape defined here.",
+  "type": "object",
+  "required": ["format", "id", "name", "engine", "body"],
+  "additionalProperties": false,
+  "$defs": {
+    "signalValue": { "type": ["number", "string", "boolean", "null"] },
+    "providerConnection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "provider"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 },
+        "label": { "type": "string" },
+        "config": { "type": "object", "description": "Non-secret settings only." }
+      }
+    },
+    "valueTransform": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "inMin", "inMax", "outMin", "outMax"],
+          "properties": {
+            "kind": { "const": "scale" },
+            "inMin": { "type": "number" },
+            "inMax": { "type": "number" },
+            "outMin": { "type": "number" },
+            "outMax": { "type": "number" },
+            "clamp": { "type": "boolean" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "steps"],
+          "properties": {
+            "kind": { "const": "threshold" },
+            "steps": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["at", "value"],
+                "properties": { "at": { "type": "number" }, "value": { "$ref": "#/$defs/signalValue" } }
+              }
+            },
+            "below": { "$ref": "#/$defs/signalValue" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "cases"],
+          "properties": {
+            "kind": { "const": "map" },
+            "cases": { "type": "object", "additionalProperties": { "$ref": "#/$defs/signalValue" } },
+            "default": { "$ref": "#/$defs/signalValue" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "template"],
+          "properties": {
+            "kind": { "const": "format" },
+            "template": { "type": "string", "pattern": "\\{value\\}" },
+            "digits": { "type": "integer", "minimum": 0, "maximum": 20 }
+          }
+        }
+      ]
+    },
+    "signalBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connection", "source"],
+      "properties": {
+        "connection": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "transform": { "$ref": "#/$defs/valueTransform" }
+      }
+    }
+  },
+  "properties": {
+    "format": { "const": "holodeck.document.v1" },
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string" },
+    "engine": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)*$" },
+    "engineVersion": { "type": "string" },
+    "theme": { "type": "string", "minLength": 1 },
+    "requires": { "type": "object", "additionalProperties": { "type": "string" } },
+    "connections": { "type": "array", "items": { "$ref": "#/$defs/providerConnection" } },
+    "body": { "description": "Engine-owned content, e.g. holodeck.iso.scene.v1." },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "description": { "type": "string" },
+        "author": { "type": "string" },
+        "created": { "type": "string" },
+        "updated": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "extensions": { "type": "object" }
+  }
+}

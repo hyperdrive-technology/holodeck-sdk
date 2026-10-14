@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/hyperdrive-technology/holodeck-sdk/schema/holodeck-package.v1.schema.json",
+  "title": "Holodeck package manifest (holodeck.package.json)",
+  "description": "Declares what a Holodeck package contributes so hosts and marketplaces can index it, check compatibility and ask for permissions before loading code. Contract: docs/PACKAGING.md. The TypeScript validator validateHolodeckPackageManifest is authoritative for rules JSON Schema cannot express (engine ranges for every engine kind, providers ⇒ holodeck.provider, no self-requires).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "name", "version", "license", "contributes", "entry"],
+  "$defs": {
+    "dottedId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)*$"
+    },
+    "kindName": {
+      "description": "<engine id>.<name>; segments after the first may be camelCase (holodeck.flow.nodeType)",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*)+$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
+    },
+    "range": {
+      "description": "Supported subset: *, 1.2.3, ^1.2, ~1.2, >=1.2.3",
+      "type": "string",
+      "pattern": "^\\s*(\\*|(\\^|~|>=)?(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(\\.(0|[1-9]\\d*))?)\\s*$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "not": { "pattern": "(^/)|(\\\\)|(^[A-Za-z][A-Za-z0-9+.-]*:)|(^|/)\\.\\.(/|$)|[%?#\\u0000-\\u001f\\u007f]|^\\s|\\s$" }
+    },
+    "rangeMap": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/dottedId" },
+      "additionalProperties": { "$ref": "#/$defs/range" }
+    }
+  },
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": "holodeck.package.v1" },
+    "id": { "$ref": "#/$defs/dottedId", "description": "Package id; also the extension id in the registry." },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "$ref": "#/$defs/version" },
+    "license": { "type": "string", "minLength": 1, "description": "SPDX id of code and original assets." },
+    "description": { "type": "string" },
+    "contributes": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/kindName" },
+      "description": "Every kind the package contributes, e.g. holodeck.iso.part, holodeck.provider."
+    },
+    "engines": {
+      "$ref": "#/$defs/rangeMap",
+      "description": "Engine id → engine API range; required for each engine whose kinds appear in contributes."
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "apiVersion", "documentFormat"],
+      "properties": {
+        "id": { "$ref": "#/$defs/dottedId" },
+        "apiVersion": { "$ref": "#/$defs/version" },
+        "documentFormat": { "type": "string", "minLength": 1 }
+      }
+    },
+    "providers": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/dottedId" } },
+    "requires": { "$ref": "#/$defs/rangeMap", "description": "Holodeck packages that must be installed first." },
+    "entry": { "$ref": "#/$defs/relativePath" },
+    "assets": { "$ref": "#/$defs/relativePath" },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "network": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(https|wss|http|ws)://(\\*\\.)?[a-z0-9-]+(\\.[a-z0-9-*]+)*(:\\d{1,5})?$"
+          }
+        }
+      }
+    },
+    "assetLicenses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "license"],
+        "properties": {
+          "path": { "$ref": "#/$defs/relativePath" },
+          "license": { "type": "string", "minLength": 1 },
+          "notice": { "type": "string" }
+        }
+      }
+    },
+    "homepage": { "type": "string" },
+    "repository": { "type": "string" },
+    "keywords": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  }
+}

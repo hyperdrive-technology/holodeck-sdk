@@ -1,0 +1,15 @@
+{
+  "$schema": "../../schema/holodeck-package.v1.schema.json",
+  "schemaVersion": "holodeck.package.v1",
+  "id": "holodeck.flow",
+  "name": "Holodeck flow engine",
+  "description": "xyflow graph editor: block nodes from holodeck.flow.block definitions, typed wires, palette, deploy and debug.",
+  "version": "1.0.0",
+  "license": "MIT",
+  "engine": { "id": "holodeck.flow", "apiVersion": "1.0.0", "documentFormat": "holodeck.flow.graph.v1" },
+  "contributes": ["holodeck.flow.nodeType", "holodeck.flow.edgeType", "holodeck.flow.palette", "holodeck.flow.theme"],
+  "engines": { "holodeck.flow": "^1.0" },
+  "entry": "dist/holodeck-package.js",
+  "repository": "github:hyperdrive-technology/holodeck",
+  "keywords": ["engine", "flow", "xyflow"]
+}

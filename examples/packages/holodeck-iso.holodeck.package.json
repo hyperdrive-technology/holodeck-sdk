@@ -1,0 +1,16 @@
+{
+  "$schema": "../../schema/holodeck-package.v1.schema.json",
+  "schemaVersion": "holodeck.package.v1",
+  "id": "holodeck.iso",
+  "name": "Holodeck 2.5D engine",
+  "description": "React Three Fiber isometric canvas: components, connectors, areas, labels, icons, images and widgets, with the default theme and built-in primitives.",
+  "version": "1.0.0",
+  "license": "MIT",
+  "engine": { "id": "holodeck.iso", "apiVersion": "1.0.0", "documentFormat": "holodeck.iso.scene.v1" },
+  "contributes": ["holodeck.iso.part", "holodeck.iso.theme", "holodeck.iso.animator", "holodeck.iso.inspector"],
+  "engines": { "holodeck.iso": "^1.0" },
+  "entry": "dist/holodeck-package.js",
+  "assets": "assets",
+  "repository": "github:hyperdrive-technology/holodeck",
+  "keywords": ["engine", "isometric", "r3f"]
+}

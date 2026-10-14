@@ -1,0 +1,23 @@
+{
+  "$schema": "../../schema/holodeck-package.v1.schema.json",
+  "schemaVersion": "holodeck.package.v1",
+  "id": "holodeck.aws",
+  "name": "AWS architecture components",
+  "description": "AWS services as placeable components: cloud archetypes carrying the official AWS architecture icons and service colours.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "contributes": ["holodeck.iso.part"],
+  "engines": { "holodeck.iso": "^1.0" },
+  "requires": { "holodeck.cloud": "^0.1" },
+  "entry": "dist/index.js",
+  "assets": "assets",
+  "assetLicenses": [
+    {
+      "path": "assets/aws-icons",
+      "license": "LicenseRef-AWS-Architecture-Icons",
+      "notice": "AWS Architecture Icons are provided by Amazon Web Services under its usage guidelines. Amazon Web Services, AWS and the AWS service names are trademarks of Amazon.com, Inc. or its affiliates."
+    }
+  ],
+  "repository": "github:hyperdrive-technology/holodeck",
+  "keywords": ["library", "aws", "cloud"]
+}

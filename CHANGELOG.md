@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Packaging contract v1 ([docs/PACKAGING.md](docs/PACKAGING.md)): `holodeck.package.v1` manifests
+  (`validateHolodeckPackageManifest`, `packageRoles`, `checkExtensionMatchesManifest`, JSON Schema),
+  `HolodeckEngine` descriptors, and `HolodeckHost` (engine registration with API compatibility,
+  package install with `requires`, shared ownership: owner sets, `USER_OWNER`, `VERSION_CONFLICT`,
+  removal of packages left with no owner or requirer via `uninstallPackage` / `uninstallOwnedBy`, and document checks).
+- `HolodeckDocument` envelope (`holodeck.document.v1`), signal bindings and value transforms
+  (`scale`, `threshold`, `map`, `format`).
+- Provider contract `HolodeckProvider` / `ProviderSession` (subscribe plus optional read, write, browse,
+  history, discover, deploy), the `holodeck.sim` reference provider, and `runProviderConformance`.
+- `ProviderHub`: connections and bindings → per-object live values, with reconnect on install and
+  write-through.
+- Kinds `holodeck.provider`, `holodeck.importer`, `holodeck.document.check`, `holodeck.flow.block`,
+  `holodeck.flow.theme`; `DocumentCheck`, `HolodeckImporter`, `runDocumentChecks`, `findImporters`.
+- Version ranges (`satisfiesRange`: `*`, exact, `^`, `~`, `>=`).
+
+### Deprecated
+
+- `Provider`, `ProviderConfig`, `MetricsQuery`, `MetricsResult`: use `HolodeckProvider` and bindings.
+
 ## [0.1.0] - 2026-09-22
 
 First tagged Holodeck SDK release.

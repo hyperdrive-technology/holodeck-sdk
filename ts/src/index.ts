@@ -295,6 +295,7 @@ export interface ProviderConfig {
 
 /**
  * Metrics query
+ * @deprecated Part of the pre-v1 `Provider` contract; use `HolodeckProvider`.
  */
 export interface MetricsQuery {
   nodeIds?: string[];
@@ -327,6 +328,8 @@ export interface MetricsResult {
 
 /**
  * Provider interface for supplying live data
+ * @deprecated Node-centric pre-v1 contract. Use `HolodeckProvider` with document
+ * bindings and `ProviderHub` (docs/PACKAGING.md §6).
  */
 export interface Provider {
   id: string;
@@ -692,3 +695,16 @@ export function calculateSceneStats(scene: SceneFile): SceneStats {
 // =============================================================================
 
 export * from './registry.js';
+
+// =============================================================================
+// PACKAGING: engines, packages, documents, providers (docs/PACKAGING.md)
+// =============================================================================
+
+export * from './version.js';
+export * from './document.js';
+export * from './provider.js';
+export * from './hub.js';
+export * from './package.js';
+export * from './engine.js';
+export * from './checks.js';
+export * from './host.js';
