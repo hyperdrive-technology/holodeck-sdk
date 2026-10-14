@@ -53,6 +53,8 @@ export interface HolodeckEngine<Body = unknown> {
 Rules:
 
 - **Kind names are `<engine id>.<name>`.** That is how a manifest knows which engine a kind needs (`engineOfKind`).
+  Ids (packages, providers, engines) are lowercase; segments after a kind's namespace may be camelCase
+  (`holodeck.flow.nodeType`), checked by `isKindName`.
   Host kinds (`holodeck.provider`, `holodeck.importer`, `holodeck.document.check`) are the only exceptions.
 - **`apiVersion` is the contract packages build against.** Adding an optional field to a contribution type
   is a minor bump. Removing or reinterpreting one is a major bump. A host refuses to register an engine
@@ -187,6 +189,10 @@ first:
   blocks: packages still held by the user or other extensions, or still required, are reported in `kept`.
 
 Both return `{ removed, kept }`. This is what makes embedding in host extensions work (§8).
+
+Registry hooks and subscribers run inside the host's install/uninstall, so the host treats the
+operation as in flight. A package being committed counts as a requirer. A package being removed cannot
+be required, shared or removed again; such calls fail with `MISSING_REQUIREMENT` or `BUSY`.
 
 Registry semantics (duplicate ids are errors, pending kinds, hooks after commit) are unchanged: see the
 README's "Registry behaviour".

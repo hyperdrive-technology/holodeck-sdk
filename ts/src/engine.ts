@@ -12,7 +12,7 @@
  */
 
 import type { BindingRef } from './document.js';
-import { isDottedId, isNonEmptyStr, isObj } from './guards.js';
+import { isDottedId, isKindName, isNonEmptyStr, isObj } from './guards.js';
 import type { ContributionKind } from './registry.js';
 import { isValidVersion } from './version.js';
 
@@ -46,8 +46,8 @@ export function validateEngine(raw: unknown): string[] {
   else {
     const seen = new Set<string>();
     raw.kinds.forEach((k: unknown, i: number) => {
-      if (!isObj(k) || !isDottedId(k.kind)) {
-        errors.push(`kinds[${i}]: must be a contribution kind with a dotted name`);
+      if (!isObj(k) || !isKindName(k.kind)) {
+        errors.push(`kinds[${i}]: must be a contribution kind named like "holodeck.iso.part"`);
         return;
       }
       if (isDottedId(raw.id) && !k.kind.startsWith(`${raw.id}.`)) {

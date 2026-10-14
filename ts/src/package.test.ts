@@ -7,6 +7,7 @@ import {
   checkExtensionMatchesManifest,
   defineHolodeckPackage,
   engineOfKind,
+  isKindName,
   isOriginPattern,
   isPackageRelativePath,
   originMatches,
@@ -16,6 +17,7 @@ import {
   validateHolodeckPackageManifest,
   type HolodeckPackageManifest,
 } from './package';
+import { HOLODECK_KINDS } from './registry';
 
 const manifest = (over: Partial<HolodeckPackageManifest> & Record<string, unknown> = {}): HolodeckPackageManifest => ({
   schemaVersion: HOLODECK_PACKAGE_SCHEMA,
@@ -180,7 +182,7 @@ describe('validateHolodeckPackageManifest', () => {
         expect.stringMatching(/^license/),
         expect.stringMatching(/^description/),
         'contributes: "holodeck.iso.part" is listed twice',
-        'contributes: "Bad Kind" is not a dotted kind name',
+        'contributes: "Bad Kind" is not a kind name such as "holodeck.iso.part"',
         'contributes: "holodeck.iso.part" needs an engines["holodeck.iso"] range',
         'engines: "Holodeck Iso" is not a dotted engine id',
         expect.stringMatching(/engines\.Holodeck Iso: unsupported/),
@@ -225,6 +227,31 @@ describe('validateHolodeckPackageManifest', () => {
       expect((error as Error).name).toBe('HolodeckPackageError');
       expect((error as { details: string[] }).details.length).toBeGreaterThan(3);
     }
+  });
+});
+
+describe('kind names (GPT review sdk#23 r2 P1)', () => {
+  it('accepts the exported camelCase flow kinds in contributes', () => {
+    expect(
+      validateHolodeckPackageManifest(
+        manifest({
+          contributes: [HOLODECK_KINDS.flowNodeType, HOLODECK_KINDS.flowEdgeType, HOLODECK_KINDS.flowPalette, HOLODECK_KINDS.flowBlock],
+          engines: { 'holodeck.flow': '^1.0' },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('every exported kind is a valid kind name, and kind rules stay stricter than free text', () => {
+    for (const kind of Object.values(HOLODECK_KINDS)) expect([kind, isKindName(kind)]).toEqual([kind, true]);
+    for (const bad of ['Holodeck.iso.part', 'single', 'holodeck..part', 'holodeck.iso.', 'holodeck iso.part', 'holodeck.iso_part']) {
+      expect([bad, isKindName(bad)]).toEqual([bad, false]);
+    }
+    expect(engineOfKind(HOLODECK_KINDS.flowNodeType)).toBe('holodeck.flow');
+  });
+
+  it('package and engine ids stay lowercase', () => {
+    expect(validateHolodeckPackageManifest(manifest({ id: 'holodeck.Aws' }))[0]).toMatch(/^id:/);
   });
 });
 

@@ -11,6 +11,11 @@
       "type": "string",
       "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)*$"
     },
+    "kindName": {
+      "description": "<engine id>.<name>; segments after the first may be camelCase (holodeck.flow.nodeType)",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-zA-Z0-9]+(?:-[a-zA-Z0-9]+)*)+$"
+    },
     "version": {
       "type": "string",
       "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$"
@@ -42,7 +47,7 @@
     "contributes": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/dottedId" },
+      "items": { "$ref": "#/$defs/kindName" },
       "description": "Every kind the package contributes, e.g. holodeck.iso.part, holodeck.provider."
     },
     "engines": {

@@ -18,7 +18,9 @@
  * reference; see docs/PACKAGING.md §8.
  */
 
-import { isDottedId, isNonEmptyStr, isObj, isStr, isStrArray } from './guards.js';
+import { isDottedId, isKindName, isNonEmptyStr, isObj, isStr, isStrArray } from './guards.js';
+
+export { isKindName };
 import { HOLODECK_KINDS, type HolodeckExtension } from './registry.js';
 import { isValidRange, isValidVersion } from './version.js';
 
@@ -179,7 +181,7 @@ export function validateHolodeckPackageManifest(raw: unknown): string[] {
   else {
     const seen = new Set<string>();
     for (const kind of raw.contributes) {
-      if (!isDottedId(kind)) errors.push(`contributes: "${kind}" is not a dotted kind name`);
+      if (!isKindName(kind)) errors.push(`contributes: "${kind}" is not a kind name such as "holodeck.iso.part"`);
       if (seen.has(kind)) errors.push(`contributes: "${kind}" is listed twice`);
       seen.add(kind);
       const engine = engineOfKind(kind);

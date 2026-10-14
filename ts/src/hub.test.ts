@@ -22,7 +22,10 @@ interface FakeSession extends ProviderSession {
   ctx: ProviderContext;
 }
 
-function fakeProvider(id = 'test.fake', opts: { write?: boolean; delay?: Promise<void>; fail?: unknown; throwSync?: unknown } = {}) {
+function fakeProvider(
+  id = 'test.fake',
+  opts: { write?: boolean; delay?: Promise<void>; fail?: unknown; throwSync?: unknown; closeDelay?: Promise<void>; closeThrows?: boolean } = {},
+) {
   const sessions: FakeSession[] = [];
   const provider: HolodeckProvider = {
     id,
@@ -58,10 +61,14 @@ function fakeProvider(id = 'test.fake', opts: { write?: boolean; delay?: Promise
             status = message === undefined ? { state, since: 1 } : { state, message, since: 1 };
             statusListeners.forEach((l) => l(status));
           },
-          async close() {
-            session.closed = true;
-            sink = undefined;
-            status = { state: 'disconnected', since: 2 };
+          close() {
+            if (opts.closeThrows) throw new Error('close threw');
+            const finish = () => {
+              session.closed = true;
+              sink = undefined;
+              status = { state: 'disconnected', since: 2 };
+            };
+            return opts.closeDelay ? opts.closeDelay.then(finish) : Promise.resolve(finish());
           },
         };
         if (opts.write) session.write = vi.fn(async () => {});
@@ -399,6 +406,59 @@ describe('ProviderHub', () => {
     expect(hub.getSnapshot().metrics.tank?.level).toBeCloseTo(0.5);
     await hub.dispose();
     expect(manual.active).toBe(0);
+  });
+});
+
+describe('ProviderHub disposal waits for every close (GPT review sdk#23 r2 P2)', () => {
+  const gate = () => {
+    let open: () => void = () => {};
+    const promise = new Promise<void>((r) => (open = r));
+    return { promise, open };
+  };
+  const resolved = async (p: Promise<unknown>) => {
+    let done = false;
+    void p.then(() => (done = true));
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+    return done;
+  };
+
+  it('awaits a slow close of a connection removed before dispose', async () => {
+    const closing = gate();
+    const { provider, sessions } = fakeProvider('test.fake', { closeDelay: closing.promise });
+    const { hub } = setup([provider]);
+    hub.setConnections([conn('c')]);
+    await hub.settled();
+    hub.setConnections([]);
+    const disposed = hub.dispose();
+    expect(await resolved(disposed)).toBe(false);
+    closing.open();
+    await disposed;
+    expect(sessions[0]!.closed).toBe(true);
+  });
+
+  it('awaits the close of a session whose connect was still pending at dispose', async () => {
+    const connecting = gate();
+    const closing = gate();
+    const { provider, sessions } = fakeProvider('test.fake', { delay: connecting.promise, closeDelay: closing.promise });
+    const { hub } = setup([provider]);
+    hub.setConnections([conn('c')]);
+    const disposed = hub.dispose();
+    connecting.open();
+    expect(await resolved(disposed)).toBe(false);
+    expect(sessions).toHaveLength(1);
+    closing.open();
+    await disposed;
+    expect(sessions[0]!.closed).toBe(true);
+  });
+
+  it('logs a close() that throws synchronously and still disposes', async () => {
+    const { provider } = fakeProvider('test.fake', { closeThrows: true });
+    const { hub, log } = setup([provider]);
+    hub.setConnections([conn('c')]);
+    await hub.settled();
+    await hub.dispose();
+    expect(log).toHaveBeenCalledWith('warn', 'closing "c" failed', expect.any(Error));
   });
 });
 

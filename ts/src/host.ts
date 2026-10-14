@@ -52,7 +52,8 @@ export type HolodeckHostErrorCode =
   | 'UNKNOWN_PACKAGE'
   | 'REQUIRED_BY'
   | 'VERSION_CONFLICT'
-  | 'NOT_OWNER';
+  | 'NOT_OWNER'
+  | 'BUSY';
 
 export class HolodeckHostError extends Error {
   constructor(
@@ -123,6 +124,15 @@ export class HolodeckHost {
   private readonly engineTable = new Map<string, HolodeckEngine>();
   private readonly installed = new Map<string, InstalledPackage>();
   private readonly installing = new Set<string>();
+  /**
+   * Packages inside `registry.install` / `registry.uninstall`. Registry hooks
+   * and subscribers run in there, before `installed` is updated, and may call
+   * back into the host: these sets make such re-entrant calls see the
+   * operation in flight (a committing package's `requires` hold; a package
+   * being removed cannot be required, shared or removed again).
+   */
+  private readonly committing = new Map<string, HolodeckPackageManifest>();
+  private readonly removing = new Set<string>();
 
   constructor(options: HolodeckHostOptions) {
     this.name = options.name;
@@ -178,14 +188,20 @@ export class HolodeckHost {
       // then hands back its unregister function on the error. Undo every kind
       // this call registered so a retry starts clean.
       if (error instanceof KindRegistrationError) offs.push(error.unregister);
-      offs.forEach((off) => off());
+      const cleanupErrors = runAll(offs);
+      if (cleanupErrors.length) {
+        throw new AggregateError([error, ...cleanupErrors], `engine "${engine.id}" failed to register and cleanup also failed`);
+      }
       throw error;
     }
     this.engineTable.set(engine.id, engine);
     return () => {
       if (this.engineTable.get(engine.id) !== engine) return;
       this.engineTable.delete(engine.id);
-      offs.forEach((off) => off());
+      // Every kind must go even if an unregister callback throws, or a
+      // replacement engine would adopt the stale definitions.
+      const errors = runAll(offs);
+      if (errors.length) throw new AggregateError(errors, `engine "${engine.id}" unregistered, but callbacks failed`);
     };
   }
 
@@ -228,6 +244,9 @@ export class HolodeckHost {
     if (this.installing.has(id)) {
       throw new HolodeckHostError(`package "${id}" is being installed`, 'DUPLICATE_PACKAGE');
     }
+    if (this.removing.has(id)) {
+      throw new HolodeckHostError(`package "${id}" is being removed`, 'BUSY');
+    }
     const existing = this.installed.get(id);
     if (existing) return this.share(existing, manifest, owner, options.range);
     if (options.range !== undefined && !satisfiesRange(manifest.version, options.range)) {
@@ -256,6 +275,7 @@ export class HolodeckHost {
 
       const record: InstalledPackage = { manifest, owners: [owner] };
       let install: InstallResult;
+      this.committing.set(id, manifest);
       try {
         install = this.registry.install(ext);
       } catch (error) {
@@ -266,6 +286,8 @@ export class HolodeckHost {
         const committed = this.registry.installedExtensions().find((e) => e.id === id) === ext;
         if (error instanceof AggregateError && committed) this.installed.set(id, record);
         throw error;
+      } finally {
+        this.committing.delete(id);
       }
       this.installed.set(id, record);
       return { packageId: id, shared: false, install, unresolvedEngines };
@@ -284,6 +306,7 @@ export class HolodeckHost {
   uninstallPackage(id: string): PackageRemovalReport {
     const pkg = this.installed.get(id);
     if (!pkg) throw new HolodeckHostError(`package "${id}" is not installed`, 'UNKNOWN_PACKAGE');
+    if (this.removing.has(id)) throw new HolodeckHostError(`package "${id}" is being removed`, 'BUSY');
     if (!pkg.owners.includes(USER_OWNER)) {
       throw new HolodeckHostError(`package "${id}" was not installed by the user`, 'NOT_OWNER', [
         `owned by ${pkg.owners.join(', ') || 'nobody (kept alive by requirements)'}`,
@@ -385,6 +408,7 @@ export class HolodeckHost {
       ]);
     }
     const missing = Object.entries(manifest.requires ?? {}).flatMap(([dep, range]) => {
+      if (this.removing.has(dep)) return [`${dep} ${range} is being removed`];
       const have = this.installed.get(dep)?.manifest.version;
       if (have === undefined) return [`${dep} ${range} is not installed`];
       return satisfiesRange(have, range) ? [] : [`${dep} ${range} is required, ${have} is installed`];
@@ -432,9 +456,10 @@ export class HolodeckHost {
     return { packageId: id, shared: true, unresolvedEngines: [] };
   }
 
-  /** Installed packages that require `id`. */
+  /** Installed and committing packages that require `id`. */
   private requirersOf(id: string): string[] {
-    return [...this.installed].filter(([, p]) => p.manifest.requires?.[id] !== undefined).map(([other]) => other);
+    const manifests = [...this.installed].map(([other, p]) => [other, p.manifest] as const).concat([...this.committing]);
+    return manifests.filter(([, m]) => m.requires?.[id] !== undefined).map(([other]) => other);
   }
 
   /**
@@ -446,7 +471,9 @@ export class HolodeckHost {
     const removed: string[] = [];
     const hookErrors: unknown[] = [];
     for (;;) {
-      const orphan = [...this.installed].find(([id, p]) => !p.owners.length && !this.requirersOf(id).length)?.[0];
+      const orphan = [...this.installed].find(
+        ([id, p]) => !p.owners.length && !this.removing.has(id) && !this.requirersOf(id).length,
+      )?.[0];
       if (orphan === undefined) break;
       try {
         this.removeFromRegistry(orphan);
@@ -463,13 +490,28 @@ export class HolodeckHost {
   }
 
   private removeFromRegistry(id: string): void {
+    this.removing.add(id);
     try {
       this.registry.uninstall(id);
     } finally {
+      this.removing.delete(id);
       // An AggregateError from uninstall hooks still means the uninstall committed.
       if (!this.registry.installedExtensions().some((e) => e.id === id)) this.installed.delete(id);
     }
   }
+}
+
+/** Call every function; return what they threw, in order. */
+function runAll(fns: ReadonlyArray<() => void>): unknown[] {
+  const errors: unknown[] = [];
+  for (const fn of fns) {
+    try {
+      fn();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  return errors;
 }
 
 function isExtension(source: HolodeckPackageModule | HolodeckExtension): source is HolodeckExtension {

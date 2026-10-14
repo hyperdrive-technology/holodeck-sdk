@@ -103,7 +103,7 @@ describe('HolodeckHost', () => {
       ).toHaveLength(7);
       expect(validateEngine({ ...isoEngine(), kinds: [partKind, partKind, { kind: 7 }] })).toEqual([
         'kinds[1]: "holodeck.iso.part" is listed twice',
-        'kinds[2]: must be a contribution kind with a dotted name',
+        'kinds[2]: must be a contribution kind named like "holodeck.iso.part"',
       ]);
     });
   });
@@ -419,6 +419,118 @@ describe('HolodeckHost', () => {
       host.registerEngine({ ...isoEngine(), kinds: [partKind, goodTheme] });
       expect(seen).toEqual(['light']);
       expect(host.registry.list('holodeck.iso.part')).toHaveLength(1);
+    });
+  });
+
+  describe('GPT review sdk#23 r2 regressions', () => {
+    it('P1: an engine and packages may use the exported camelCase flow kinds', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const flowEngine: HolodeckEngine = {
+        id: 'holodeck.flow',
+        label: 'Flow',
+        apiVersion: '1.0.0',
+        documentFormat: 'holodeck.flow.graph.v1',
+        kinds: [{ kind: 'holodeck.flow.nodeType' }, { kind: 'holodeck.flow.edgeType' }],
+      };
+      expect(validateEngine(flowEngine)).toEqual([]);
+      host.registerEngine(flowEngine);
+      await host.installPackage(
+        manifest({ id: 'acme.nodes', contributes: ['holodeck.flow.nodeType', 'holodeck.flow.edgeType'], engines: { 'holodeck.flow': '^1.0' } }),
+        ext('acme.nodes', '0.1.0', { 'holodeck.flow.nodeType': [{ id: 'acme:block' }], 'holodeck.flow.edgeType': [{ id: 'acme:wire' }] }),
+      );
+      expect(host.registry.list('holodeck.flow.nodeType')).toHaveLength(1);
+    });
+
+    it('P2: an install hook cannot remove a package the committing package requires', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}));
+      let hookError: unknown;
+      host.registry.registerKind({
+        kind: 'holodeck.iso.theme',
+        onInstall: (_items, extensionId) => {
+          if (extensionId !== 'holodeck.aws') return;
+          try {
+            host.uninstallPackage('holodeck.cloud');
+          } catch (error) {
+            hookError = error;
+          }
+        },
+      });
+      await host.installPackage(
+        manifest({ id: 'holodeck.aws', contributes: ['holodeck.iso.theme'], requires: { 'holodeck.cloud': '^0.1' } }),
+        ext('holodeck.aws', '0.1.0', { 'holodeck.iso.theme': [{ id: 'aws-theme' }] }),
+      );
+      expect(hookError).toMatchObject({ code: 'REQUIRED_BY', details: ['holodeck.aws requires holodeck.cloud'] });
+      expect(host.package('holodeck.cloud')).toBeDefined();
+      expect(host.package('holodeck.aws')).toBeDefined();
+    });
+
+    it('P2: an uninstall hook cannot install a package requiring the one being removed, or share or re-remove it', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const attempts: Array<Promise<unknown>> = [];
+      const sync: unknown[] = [];
+      host.registry.registerKind({
+        kind: 'holodeck.iso.theme',
+        onUninstall: (_items, extensionId) => {
+          if (extensionId !== 'holodeck.cloud') return;
+          attempts.push(
+            host.installPackage(
+              manifest({ id: 'holodeck.aws', requires: { 'holodeck.cloud': '^0.1' }, contributes: ['holodeck.iso.part'] }),
+              ext('holodeck.aws', '0.1.0', {}),
+            ),
+            host.installPackage(manifest({ contributes: ['holodeck.iso.theme'] }), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.x' }),
+          );
+          try {
+            host.uninstallPackage('holodeck.cloud');
+          } catch (error) {
+            sync.push(error);
+          }
+        },
+      });
+      await host.installPackage(manifest({ contributes: ['holodeck.iso.theme'] }), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.theme': [{ id: 't' }] }));
+      expect(host.uninstallPackage('holodeck.cloud')).toEqual({ removed: ['holodeck.cloud'], kept: [] });
+      const [requiring, sharing] = await Promise.allSettled(attempts);
+      expect(requiring).toMatchObject({ status: 'rejected', reason: { code: 'MISSING_REQUIREMENT', details: ['holodeck.cloud ^0.1 is being removed'] } });
+      expect(sharing).toMatchObject({ status: 'rejected', reason: { code: 'BUSY' } });
+      expect(sync).toEqual([expect.objectContaining({ code: 'BUSY' })]);
+      expect(host.packages()).toEqual([]);
+      expect(host.registry.installedExtensions()).toEqual([]);
+    });
+
+    it('P2: unregistering an engine removes every kind even when a callback throws; a replacement validator applies', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const off = host.registerEngine(isoEngine());
+      host.registry.subscribe((change) => {
+        if (change.type === 'kind-unregistered' && change.kind === 'holodeck.iso.part') throw new Error('subscriber');
+      });
+      expect(() => off()).toThrow(AggregateError);
+      expect(host.engine('holodeck.iso')).toBeUndefined();
+      expect(host.registry.hasKind('holodeck.iso.part')).toBe(false);
+      expect(host.registry.hasKind('holodeck.iso.theme')).toBe(false);
+      // A pending item that the replacement's validator rejects must now be validated, not silently adopted.
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.part': [{ id: 'nolabel' }] }));
+      expect(() => host.registerEngine(isoEngine())).toThrow(expect.objectContaining({ code: 'INVALID_ITEM' }));
+    });
+
+    it('P2: rollback runs every cleanup and reports cleanup failures with the original error', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(
+        manifest({ contributes: ['holodeck.iso.part', 'holodeck.iso.theme'] }),
+        ext('holodeck.cloud', '0.1.0', { 'holodeck.iso.part': [{ id: 'nolabel' }] }),
+      );
+      host.registry.subscribe((change) => {
+        if (change.type === 'kind-unregistered') throw new Error('cleanup subscriber');
+      });
+      let thrown: unknown;
+      try {
+        host.registerEngine({ ...isoEngine(), kinds: [themeKind, partKind] });
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(AggregateError);
+      expect((thrown as AggregateError).errors[0]).toMatchObject({ code: 'INVALID_ITEM' });
+      expect(host.registry.hasKind('holodeck.iso.theme')).toBe(false);
+      expect(host.engine('holodeck.iso')).toBeUndefined();
     });
   });
 

@@ -135,6 +135,8 @@ export class ProviderHub {
   private snapshot: HubSnapshot | undefined;
   private readonly listeners = new Set<() => void>();
   private readonly pending = new Set<Promise<void>>();
+  /** `session.close()` calls still running (removed, replaced or superseded sessions). */
+  private readonly closing = new Set<Promise<void>>();
   private readonly offRegistry: () => void;
   private disposed = false;
 
@@ -236,10 +238,12 @@ export class ProviderHub {
     if (this.disposed) return;
     this.disposed = true;
     this.offRegistry();
-    const closing = [...this.slots].map(([id, slot]) => this.closeSlot(id, slot));
+    for (const [id, slot] of [...this.slots]) void this.closeSlot(id, slot);
     this.listeners.clear();
-    await Promise.allSettled(closing);
+    // In-flight connects resolve into superseded sessions that are closed on
+    // arrival; earlier removals may still be closing. Wait for all of it.
     await this.settled();
+    while (this.closing.size) await Promise.allSettled([...this.closing]);
   }
 
   // ---------------------------------------------------------------------------
@@ -308,7 +312,7 @@ export class ProviderHub {
   private onConnected(id: string, slot: Slot, session: ProviderSession): void {
     if (!this.isCurrent(id, slot)) {
       // Superseded while connecting (config changed, removed, or hub disposed).
-      void session.close().catch((error: unknown) => this.log('warn', `closing superseded "${id}" failed`, error));
+      this.trackClose(() => session.close(), `closing superseded "${id}" failed`);
       return;
     }
     slot.session = session;
@@ -340,7 +344,24 @@ export class ProviderHub {
     const session = slot.session;
     slot.session = undefined;
     if (!session) return Promise.resolve();
-    return session.close().catch((error: unknown) => this.log('warn', `closing "${id}" failed`, error));
+    return this.trackClose(() => session.close(), `closing "${id}" failed`);
+  }
+
+  /** Remember a `close()` until it settles so `dispose()` can wait for it; failures are logged. */
+  private trackClose(close: () => Promise<void>, failure: string): Promise<void> {
+    let closing: Promise<void>;
+    try {
+      closing = Promise.resolve(close());
+    } catch (error) {
+      closing = Promise.reject(error);
+    }
+    const tracked = closing.then(
+      () => undefined,
+      (error: unknown) => this.log('warn', failure, error),
+    );
+    this.closing.add(tracked);
+    void tracked.finally(() => this.closing.delete(tracked));
+    return tracked;
   }
 
   private onRegistryChange(): void {
