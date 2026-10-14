@@ -254,7 +254,8 @@ describe('HolodeckHost', () => {
       const host = new HolodeckHost({ name: 't' });
       expect((await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}))).shared).toBe(false);
       const a = await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.a', range: '^0.1' });
-      expect(a).toEqual({ packageId: 'holodeck.cloud', shared: true, unresolvedEngines: [] });
+      // r5 P2: a shared install reports the same pending engines a fresh one would
+      expect(a).toEqual({ packageId: 'holodeck.cloud', shared: true, unresolvedEngines: ['holodeck.iso'] });
       await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.b' });
       expect(host.package('holodeck.cloud')?.owners).toEqual([USER_OWNER, 'ext.a', 'ext.b']);
       expect(host.uninstallOwnedBy('ext.a')).toEqual({ removed: [], kept: ['holodeck.cloud'] });
@@ -684,6 +685,60 @@ describe('HolodeckHost', () => {
       await expect(host.installPackage({ ...manifest(), keywords: [() => 'x'] }, ext('holodeck.cloud', '0.1.0', {}))).rejects.toMatchObject({
         code: 'INVALID_MANIFEST',
       });
+    });
+  });
+
+  describe('GPT review sdk#23 r5 sweep (captured registrations)', () => {
+    it('P2: mutating an engine descriptor after registration changes neither lookups, compat nor teardown', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const descriptor = isoEngine('1.2.0') as HolodeckEngine & { kinds: ContributionKind[] };
+      const off = host.registerEngine(descriptor);
+      descriptor.id = 'holodeck.other';
+      descriptor.apiVersion = '9.0.0';
+      descriptor.kinds.push({ kind: 'holodeck.other.thing' });
+      const registered = host.engine('holodeck.iso')!;
+      expect(registered.apiVersion).toBe('1.2.0');
+      expect(Object.isFrozen(registered) && Object.isFrozen(registered.kinds)).toBe(true);
+      expect(() => {
+        (registered as { apiVersion: string }).apiVersion = '3.0.0';
+      }).toThrow(TypeError);
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}));
+      off();
+      expect(host.engine('holodeck.iso')).toBeUndefined();
+      expect(host.registry.hasKind('holodeck.iso.part')).toBe(false);
+      expect(host.registry.hasKind('holodeck.iso.theme')).toBe(false);
+      // collectBindings stays bound to the original descriptor
+      host.registerEngine(isoEngine());
+      expect(host.engine('holodeck.iso')!.collectBindings!({ objects: [{ id: 'o', bindings: { v: { connection: 'c', source: 's' } } }] })).toHaveLength(1);
+    });
+
+    it('P2: a shared install reports engines that are still unresolved, and none once registered', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}));
+      expect((await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.a' })).unresolvedEngines).toEqual([
+        'holodeck.iso',
+      ]);
+      host.registerEngine(isoEngine());
+      expect((await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}), { owner: 'ext.b' })).unresolvedEngines).toEqual([]);
+    });
+
+    it('extension objects and module manifests are read once', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const theExt = ext('holodeck.cloud', '0.1.0', {});
+      await host.installPackage(manifest(), theExt);
+      theExt.id = 'renamed';
+      theExt.version = '9.9.9';
+      expect(host.registry.installedExtensions().map((e) => [e.id, e.version])).toEqual([['holodeck.cloud', '0.1.0']]);
+      expect(host.uninstallPackage('holodeck.cloud').removed).toEqual(['holodeck.cloud']);
+
+      const module = {
+        manifest: manifest({ id: 'holodeck.b' }),
+        createExtension: async () => {
+          module.manifest = manifest({ id: 'holodeck.b', version: '7.0.0' }); // swapped during the await
+          return ext('holodeck.b', '0.1.0', {});
+        },
+      };
+      await expect(host.installPackage(manifest({ id: 'holodeck.b' }), module)).resolves.toMatchObject({ shared: false });
     });
   });
 

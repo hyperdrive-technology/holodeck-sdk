@@ -561,6 +561,143 @@ describe('ProviderHub sessions removed around setup (GPT review sdk#23 r4 P2)', 
   });
 });
 
+describe('ProviderHub sweep: synchronous subscribe and caller-owned input (GPT review sdk#23 r5)', () => {
+  /** A provider whose subscribe() delivers synchronously and tracks live handles. */
+  const syncProvider = () => {
+    const live = new Map<number, readonly string[]>();
+    let next = 0;
+    const provider: HolodeckProvider = {
+      id: 'test.sync',
+      label: 'Sync',
+      capabilities: {},
+      async connect() {
+        return {
+          status: () => ({ state: 'live', since: 0 }),
+          onStatus: () => () => {},
+          subscribe(sources, onSamples) {
+            const token = ++next;
+            live.set(token, [...sources]);
+            onSamples(sources.map((source) => ({ source, value: source.length, ts: 1 })));
+            return () => live.delete(token);
+          },
+          close: async () => {},
+        };
+      },
+    };
+    return { provider, live };
+  };
+
+  it('P2: rebinding from a listener during the first synchronous sample leaves exactly the newest subscription', async () => {
+    const { provider, live } = syncProvider();
+    const { hub } = setup([provider]);
+    let rebound = false;
+    hub.subscribe(() => {
+      if (rebound || !hub.getSnapshot().metrics.a) return;
+      rebound = true;
+      hub.setBindings([bind('b', 'v', 'c', 'second')]);
+    });
+    hub.setConnections([conn('c', 'test.sync')]);
+    hub.setBindings([bind('a', 'v', 'c', 'first')]);
+    await hub.settled();
+    expect(rebound).toBe(true);
+    expect([...live.values()]).toEqual([['second']]);
+    expect(hub.getSnapshot().metrics).toEqual({ b: { v: 6 } });
+    await hub.dispose();
+  });
+
+  it('P2: removing the connection from a listener during the first synchronous sample leaves no subscription', async () => {
+    const { provider, live } = syncProvider();
+    const { hub } = setup([provider]);
+    hub.subscribe(() => {
+      if (hub.getSnapshot().metrics.a) hub.setConnections([]);
+    });
+    hub.setConnections([conn('c', 'test.sync')]);
+    hub.setBindings([bind('a', 'v', 'c', 'first')]);
+    await hub.settled();
+    expect(live.size).toBe(0);
+    await hub.dispose();
+  });
+
+  it('snapshots connections, bindings and options; later edits to the caller objects change nothing', async () => {
+    const { provider, sessions } = fakeProvider();
+    let clock = 5;
+    const options = { registry: new ContributionRegistry(), now: () => clock };
+    options.registry.registerKind(PROVIDER_KIND);
+    options.registry.install({ id: 'p', version: '1.0.0', contributions: { 'holodeck.provider': [provider] } });
+    const hub = new ProviderHub(options);
+    const connection = { id: 'c', provider: 'test.fake', config: { region: 'eu' } };
+    const ref = bind('a', 'v', 'c', 's', { kind: 'scale', inMin: 0, inMax: 10, outMin: 0, outMax: 1 });
+    hub.setConnections([connection]);
+    hub.setBindings([ref]);
+    await hub.settled();
+    connection.provider = 'test.other';
+    connection.config.region = 'us';
+    (ref.binding as { source: string }).source = 'elsewhere';
+    (ref.binding.transform as { inMax: number }).inMax = 1000;
+    options.now = () => 999;
+    clock = 6;
+    sessions[0]!.emit([{ source: 's', value: 5, ts: 1 }]);
+    expect(hub.getSnapshot().metrics).toEqual({ a: { v: 0.5 } });
+    expect(hub.getSnapshot().connections.c?.provider).toBe('test.fake');
+    expect(sessions[0]!.config).toEqual({ region: 'eu' });
+    hub.setConnections([connection]); // re-sent after mutation: provider changed → reopen is now explicit
+    expect(hub.getSnapshot().connections.c?.status).toMatchObject({ state: 'error', since: 6 });
+    await hub.dispose();
+  });
+
+  it('rejects malformed connections and bindings with one TypeError', () => {
+    const { hub } = setup();
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(() => hub.setConnections([{ id: 'c', provider: 'p', config: cyclic }])).toThrow(/cycle/);
+    expect(() => hub.setConnections([{ id: '', provider: 'p' }])).toThrow(TypeError);
+    expect(() => hub.setConnections([{ id: 'c', provider: 'p', config: [] as never }])).toThrow(/config/);
+    expect(() =>
+      hub.setBindings([
+        bind('a', 'v', 'c', ''),
+        { objectId: '', param: 'v', binding: { connection: 'c', source: 's' } },
+        bind('b', 'v', 'c', 's', { kind: 'scale' } as never),
+      ]),
+    ).toThrow(/invalid bindings:\n- bindings\[0\][\s\S]*bindings\[1\][\s\S]*bindings\[2\]\.transform/);
+  });
+
+  it('snapshots are frozen; provider status objects are copied and validated', async () => {
+    let status: Record<string, unknown> = { state: 'live', since: 1 };
+    let listener: ((s: never) => void) | undefined;
+    const provider: HolodeckProvider = {
+      id: 'test.status',
+      label: 'Status',
+      capabilities: {},
+      async connect() {
+        return {
+          status: () => status as never,
+          onStatus: (l) => ((listener = l as never), () => {}),
+          subscribe: (sources, onSamples) => (onSamples(sources.map((source) => ({ source, value: 1, ts: 1 }))), () => {}),
+          close: async () => {},
+        };
+      },
+    };
+    const { hub } = setup([provider]);
+    hub.setConnections([conn('c', 'test.status')]);
+    hub.setBindings([bind('a', 'v', 'c', 's')]);
+    await hub.settled();
+    const snap = hub.getSnapshot();
+    expect(Object.isFrozen(snap) && Object.isFrozen(snap.metrics) && Object.isFrozen(snap.metrics.a)).toBe(true);
+    expect(() => {
+      (snap.metrics.a as Record<string, unknown>).v = 2;
+    }).toThrow(TypeError);
+    expect(() => {
+      (snap.connections as Record<string, unknown>).x = 1;
+    }).toThrow(TypeError);
+    status.state = 'error'; // provider mutates its own object later
+    expect(hub.getSnapshot().connections.c?.status.state).toBe('live');
+    status = { nonsense: true };
+    listener!(status as never);
+    expect(hub.getSnapshot().connections.c?.status).toMatchObject({ state: 'error', message: 'provider returned an invalid status' });
+    await hub.dispose();
+  });
+});
+
 describe('ProviderHub with hostile ids (GPT review sdk#23 P1)', () => {
   it('never writes through __proto__ object ids, params or connection ids', async () => {
     const { provider, sessions } = fakeProvider();

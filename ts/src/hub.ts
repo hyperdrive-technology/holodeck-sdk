@@ -26,8 +26,8 @@
  * - When the same `objectId.param` is bound twice, the last binding wins.
  */
 
-import { applyTransform, type BindingRef, type ProviderConnection, type ValueTransform } from './document.js';
-import { isSignalValue } from './guards.js';
+import { applyTransform, validateTransform, type BindingRef, type ProviderConnection, type ValueTransform } from './document.js';
+import { isNonEmptyStr, isObj, isSignalValue, isStr } from './guards.js';
 import type {
   HolodeckProvider,
   ProviderContext,
@@ -80,19 +80,47 @@ interface Slot {
   offStatus: (() => void) | undefined;
   unsubscribe: (() => void) | undefined;
   subscribedKey: string | undefined;
+  /** Bumped per subscribe; samples or handles from an older generation are discarded. */
+  subscription: number;
   closed: boolean;
 }
 
-/** JSON with sorted object keys, so equal configs compare equal. */
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+/** JSON with sorted object keys, so equal configs compare equal. Throws `TypeError` on cycles. */
+function stableStringify(value: unknown, seen: Set<object> = new Set()): string {
   if (value && typeof value === 'object') {
-    const entries = Object.keys(value as Record<string, unknown>)
-      .sort()
-      .map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`);
-    return `{${entries.join(',')}}`;
+    if (seen.has(value)) throw new TypeError('connection config must be JSON data (it contains a cycle)');
+    seen.add(value);
+    const out = Array.isArray(value)
+      ? `[${value.map((v) => stableStringify(v, seen)).join(',')}]`
+      : `{${Object.keys(value as Record<string, unknown>)
+          .sort()
+          .map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k], seen)}`)
+          .join(',')}}`;
+    seen.delete(value);
+    return out;
   }
   return JSON.stringify(value) ?? 'null';
+}
+
+/** Freeze a plain-JSON value recursively (values the hub created itself). */
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  }
+  return value;
+}
+
+const STATES = ['connecting', 'live', 'stale', 'disconnected', 'error'];
+
+/** Frozen copy of a provider's status; a malformed one becomes an `error` status. */
+function copyStatus(raw: unknown, now: number): ProviderStatus {
+  if (isObj(raw) && STATES.includes(raw.state as string) && typeof raw.since === 'number') {
+    const status: ProviderStatus = { state: raw.state as ProviderStatus['state'], since: raw.since };
+    if (isStr(raw.message)) status.message = raw.message;
+    return Object.freeze(status);
+  }
+  return Object.freeze({ state: 'error', message: 'provider returned an invalid status', since: now });
 }
 
 const refKey = (objectId: string, param: string) => `${objectId}\u0000${param}`;
@@ -141,8 +169,9 @@ export class ProviderHub {
   private disposed = false;
 
   constructor(options: ProviderHubOptions) {
-    this.options = options;
-    this.offRegistry = options.registry.subscribe(() => this.onRegistryChange());
+    // Capture the options: later edits to the caller's object change nothing.
+    this.options = Object.freeze({ ...options });
+    this.offRegistry = this.options.registry.subscribe(() => this.onRegistryChange());
   }
 
   // ---------------------------------------------------------------------------
@@ -152,8 +181,10 @@ export class ProviderHub {
   /** Open, close or reopen sessions so they match `connections`. */
   setConnections(connections: readonly ProviderConnection[]): void {
     this.assertLive();
+    // Snapshot first: the hub never reads the caller's objects again.
+    const defs = connections.map(snapshotConnection);
     // Duplicate ids: the last definition wins (validated documents have none).
-    const next = new Map(connections.map((c) => [c.id, c]));
+    const next = new Map(defs.map((c) => [c.id, c]));
     for (const [id, slot] of [...this.slots]) {
       const def = next.get(id);
       if (!def || this.connectionKey(def) !== slot.key) void this.closeSlot(id, slot);
@@ -170,7 +201,7 @@ export class ProviderHub {
   setBindings(refs: readonly BindingRef[]): void {
     this.assertLive();
     const byTarget = new Map<string, BindingRef>();
-    for (const ref of refs) byTarget.set(refKey(ref.objectId, ref.param), ref);
+    for (const ref of snapshotBindings(refs)) byTarget.set(refKey(ref.objectId, ref.param), ref);
     const bySource = new Map<string, Map<string, Target[]>>();
     for (const ref of byTarget.values()) {
       const { connection, source, transform } = ref.binding;
@@ -182,7 +213,9 @@ export class ProviderHub {
     }
     this.byTarget = byTarget;
     this.bySource = bySource;
-    for (const slot of this.slots.values()) this.resubscribe(slot);
+    // A subscribe may deliver samples synchronously and a listener may then
+    // change connections or bindings again: iterate a copy, generations do the rest.
+    for (const slot of [...this.slots.values()]) this.resubscribe(slot);
     this.recomputeAll();
     this.publish();
   }
@@ -190,8 +223,8 @@ export class ProviderHub {
   getSnapshot = (): HubSnapshot => {
     if (!this.snapshot) {
       const connections = dict<ConnectionState>();
-      for (const [id, slot] of this.slots) connections[id] = { provider: slot.def.provider, status: slot.status };
-      this.snapshot = { metrics: this.metrics, quality: this.quality, connections };
+      for (const [id, slot] of this.slots) connections[id] = Object.freeze({ provider: slot.def.provider, status: slot.status });
+      this.snapshot = Object.freeze({ metrics: this.metrics, quality: this.quality, connections: Object.freeze(connections) });
     }
     return this.snapshot;
   };
@@ -274,6 +307,7 @@ export class ProviderHub {
       offStatus: undefined,
       unsubscribe: undefined,
       subscribedKey: undefined,
+      subscription: 0,
       closed: false,
     };
     this.slots.set(def.id, slot);
@@ -323,10 +357,10 @@ export class ProviderHub {
     let ready = false;
     let offStatus: (() => void) | undefined;
     try {
-      slot.status = session.status();
+      slot.status = copyStatus(session.status(), this.now());
       offStatus = session.onStatus((status) => {
         if (!this.isCurrent(id, slot)) return;
-        slot.status = status;
+        slot.status = copyStatus(status, this.now());
         if (ready) this.publish();
       });
     } catch (error) {
@@ -366,6 +400,7 @@ export class ProviderHub {
 
   private closeSlot(id: string, slot: Slot): Promise<void> {
     slot.closed = true;
+    slot.subscription++;
     this.slots.delete(id);
     this.latest.delete(id);
     slot.controller.abort();
@@ -426,14 +461,24 @@ export class ProviderHub {
     const sources = [...(this.bySource.get(id)?.keys() ?? [])].sort();
     const key = sources.join('\u0000');
     if (key === slot.subscribedKey) return;
-    slot.unsubscribe?.();
+    const previous = slot.unsubscribe;
     slot.unsubscribe = undefined;
     slot.subscribedKey = key;
+    const generation = ++slot.subscription;
+    previous?.();
     const latest = this.latest.get(id);
     if (latest) for (const source of [...latest.keys()]) if (!sources.includes(source)) latest.delete(source);
     if (!sources.length) return;
+    // subscribe() may deliver synchronously, and a listener may then rebind or
+    // remove this connection before subscribe() returns. Only the newest
+    // generation of a current slot keeps its handle or delivers samples.
+    const live = () => slot.subscription === generation && this.isCurrent(id, slot);
     try {
-      slot.unsubscribe = session.subscribe(sources, (samples) => this.onSamples(id, slot, samples));
+      const handle = session.subscribe(sources, (samples) => {
+        if (live()) this.onSamples(id, slot, samples);
+      });
+      if (live()) slot.unsubscribe = handle;
+      else handle();
     } catch (error) {
       slot.status = { state: 'error', message: `subscribe failed: ${errorMessage(error)}`, since: this.now() };
       this.log('warn', `subscribe on "${id}" failed`, error);
@@ -460,19 +505,19 @@ export class ProviderHub {
           metrics ??= dict(this.metrics);
           const next = dict(current);
           next[t.param] = value;
-          metrics[t.objectId] = next;
+          metrics[t.objectId] = Object.freeze(next);
         }
         const currentQ = (quality ?? this.quality)[t.objectId];
         if (!currentQ || currentQ[t.param] !== q) {
           quality ??= dict(this.quality);
           const next = dict(currentQ);
           next[t.param] = q;
-          quality[t.objectId] = next;
+          quality[t.objectId] = Object.freeze(next);
         }
       }
     }
-    if (metrics) this.metrics = metrics;
-    if (quality) this.quality = quality;
+    if (metrics) this.metrics = Object.freeze(metrics);
+    if (quality) this.quality = Object.freeze(quality);
     if (metrics || quality) this.publish();
   }
 
@@ -521,10 +566,55 @@ function shareStructure<T>(prev: ObjectValues<T>, next: Record<string, Record<st
       old !== undefined &&
       Object.keys(old).length === Object.keys(params).length &&
       Object.keys(params).every((k) => hasOwn(old, k) && Object.is(old[k], params[k]));
-    out[objectId] = same ? old : params;
+    out[objectId] = same ? old : Object.freeze(params);
     if (!same) changed = true;
   }
-  return changed ? out : prev;
+  return changed ? Object.freeze(out) : prev;
+}
+
+/** Frozen plain-data copy of a connection; throws `TypeError` for malformed input. */
+function snapshotConnection(c: ProviderConnection, index: number): ProviderConnection {
+  if (!isObj(c) || !isNonEmptyStr(c.id) || !isNonEmptyStr(c.provider)) {
+    throw new TypeError(`connections[${index}]: needs a non-empty string id and provider`);
+  }
+  if (c.label !== undefined && !isStr(c.label)) throw new TypeError(`connections[${index}].label: must be a string`);
+  if (c.config !== undefined && !isObj(c.config)) throw new TypeError(`connections[${index}].config: must be an object`);
+  const def: ProviderConnection = {
+    id: c.id,
+    provider: c.provider,
+    config: JSON.parse(stableStringify(c.config ?? {})) as Record<string, unknown>,
+  };
+  if (c.label !== undefined) def.label = c.label;
+  return deepFreeze(def);
+}
+
+/** Frozen plain-data copies of bindings; throws one `TypeError` listing every malformed ref. */
+function snapshotBindings(refs: readonly BindingRef[]): BindingRef[] {
+  const errors: string[] = [];
+  const out: BindingRef[] = [];
+  refs.forEach((ref, i) => {
+    const b = isObj(ref) && isObj(ref.binding) ? ref.binding : undefined;
+    if (!isObj(ref) || !isNonEmptyStr(ref.objectId) || !isNonEmptyStr(ref.param) || !b) {
+      errors.push(`bindings[${i}]: needs objectId, param and binding`);
+      return;
+    }
+    if (!isNonEmptyStr(b.connection) || !isNonEmptyStr(b.source)) {
+      errors.push(`bindings[${i}]: binding needs a non-empty connection and source`);
+      return;
+    }
+    if (b.transform !== undefined) {
+      const problems = validateTransform(b.transform, `bindings[${i}].transform`);
+      if (problems.length) {
+        errors.push(...problems);
+        return;
+      }
+    }
+    const binding: BindingRef['binding'] = { connection: b.connection, source: b.source };
+    if (b.transform !== undefined) binding.transform = JSON.parse(JSON.stringify(b.transform)) as ValueTransform;
+    out.push(deepFreeze({ objectId: ref.objectId, param: ref.param, binding }));
+  });
+  if (errors.length) throw new TypeError(`invalid bindings:\n- ${errors.join('\n- ')}`);
+  return out;
 }
 
 /** Inverse of `applyTransform` for writes. Only `scale` (and no transform) is invertible. */

@@ -163,7 +163,11 @@ export class HolodeckHost {
    * Throws `ENGINE_INCOMPATIBLE` if an installed package targets this engine
    * with a range its `apiVersion` does not satisfy.
    */
-  registerEngine(engine: HolodeckEngine): () => void {
+  registerEngine(descriptor: HolodeckEngine): () => void {
+    // Capture an immutable registration: id, versions and kind list are read
+    // once here; functions are bound to the caller's descriptor (like the
+    // registry does for kinds). Later edits to the descriptor change nothing.
+    const engine = captureEngine(descriptor);
     const errors = validateEngine(engine);
     if (errors.length) throw new HolodeckHostError(`invalid engine`, 'INVALID_ENGINE', errors);
     return this.transaction(`register engine "${engine.id}"`, () => {
@@ -257,26 +261,32 @@ export class HolodeckHost {
     if (this.installing.has(id)) {
       throw new HolodeckHostError(`package "${id}" is being installed`, 'DUPLICATE_PACKAGE');
     }
+    const range = options.range;
     const existing = this.installed.get(id);
     if (existing) {
-      return this.transaction(`share package "${id}"`, () => this.share(existing, manifest, owner, options.range));
+      return this.transaction(`share package "${id}"`, () => this.share(existing, manifest, owner, range));
     }
-    if (options.range !== undefined && !satisfiesRange(manifest.version, options.range)) {
+    if (range !== undefined && !satisfiesRange(manifest.version, range)) {
       throw new HolodeckHostError(`package "${id}" does not satisfy the requested range`, 'VERSION_CONFLICT', [
-        `${owner} needs ${id} ${options.range}, offered ${manifest.version}`,
+        `${owner} needs ${id} ${range}, offered ${manifest.version}`,
       ]);
     }
+    // Read everything needed from the caller's objects now, before any await.
+    const isExt = isExtension(source);
+    const embedded = !isExt && source.manifest ? { id: source.manifest.id, version: source.manifest.version } : undefined;
+    const context = this.packageContext(manifest, options);
 
     const pending = { owner, cancelled: false };
     this.installing.set(id, pending);
     try {
       this.assertInstallable(manifest);
-      const ext = isExtension(source) ? source : await source.createExtension(this.packageContext(manifest, options));
+      // One read of the extension's top level: the same container is checked
+      // and installed (contribution items stay the caller's objects, as the
+      // registry requires).
+      const ext = snapshotExtension(isExt ? source : await source.createExtension(context));
       const mismatch = checkExtensionMatchesManifest(manifest, ext);
-      if (!isExtension(source) && source.manifest) {
-        if (source.manifest.id !== manifest.id || source.manifest.version !== manifest.version) {
-          mismatch.push('the entry module embeds a manifest for a different id or version');
-        }
+      if (embedded && (embedded.id !== manifest.id || embedded.version !== manifest.version)) {
+        mismatch.push('the entry module embeds a manifest for a different id or version');
       }
       if (mismatch.length) {
         throw new HolodeckHostError(`package "${id}" does not match its manifest`, 'MANIFEST_MISMATCH', mismatch);
@@ -473,7 +483,9 @@ export class HolodeckHost {
       ]);
     }
     this.installed.set(id, packageRecord(existing.manifest, [...existing.owners, owner]));
-    return { packageId: id, shared: true, unresolvedEngines: [] };
+    // Same meaning as a fresh install: engines the package targets that are not registered now.
+    const unresolvedEngines = Object.keys(existing.manifest.engines ?? {}).filter((e) => !this.engineTable.has(e));
+    return { packageId: id, shared: true, unresolvedEngines };
   }
 
   /** Installed packages that require `id`. */
@@ -533,6 +545,37 @@ export class HolodeckHost {
       if (!this.registry.installedExtensions().some((e) => e.id === id)) this.installed.delete(id);
     }
   }
+}
+
+/** Frozen registration copy of an engine descriptor (functions bound to the original). */
+function captureEngine(descriptor: HolodeckEngine): HolodeckEngine {
+  const d = descriptor as unknown as Record<string, unknown>;
+  const engine: HolodeckEngine = {
+    id: d.id as string,
+    label: d.label as string,
+    apiVersion: d.apiVersion as string,
+    documentFormat: d.documentFormat as string,
+    kinds: Object.freeze(Array.isArray(d.kinds) ? [...(d.kinds as HolodeckEngine['kinds'])] : (d.kinds as HolodeckEngine['kinds'])),
+  };
+  const collect = d.collectBindings;
+  const validate = d.validateBody;
+  if (collect !== undefined) {
+    engine.collectBindings = typeof collect === 'function' ? collect.bind(descriptor) : (collect as never);
+  }
+  if (validate !== undefined) {
+    engine.validateBody = typeof validate === 'function' ? validate.bind(descriptor) : (validate as never);
+  }
+  return Object.freeze(engine);
+}
+
+/** New top-level container for an extension; contribution items are the caller's objects. */
+function snapshotExtension(ext: HolodeckExtension): HolodeckExtension {
+  const contributions: Record<string, HolodeckExtension['contributions'][string]> = Object.create(null);
+  for (const [kind, items] of Object.entries(ext.contributions ?? {})) contributions[kind] = Array.isArray(items) ? [...items] : items;
+  const copy: HolodeckExtension = { id: ext.id, version: ext.version, contributions };
+  if (ext.label !== undefined) copy.label = ext.label;
+  if (ext.description !== undefined) copy.description = ext.description;
+  return copy;
 }
 
 /** Installed-package records are immutable; owner changes replace the record. */
