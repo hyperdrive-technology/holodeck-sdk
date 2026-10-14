@@ -305,6 +305,37 @@ describe('runProviderConformance catches broken providers', () => {
     expect(failures).toEqual([expect.stringMatching(/^no samples are delivered after unsubscribe/)]);
   });
 
+  it('sdk#31 review: a tiny first-sample timeout does not shorten the unsubscribe check', async () => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const syncLeak: HolodeckProvider = {
+      id: 'sync.leak',
+      label: 'Sync leak',
+      capabilities: {},
+      async connect() {
+        let state: ProviderStatus = { state: 'live', since: 0 };
+        return {
+          status: () => state,
+          onStatus: () => () => {},
+          subscribe(sources, onSamples) {
+            const deliver = () => onSamples(sources.map((source) => ({ source, value: 1, ts: 1 })));
+            deliver(); // first sample synchronously, inside a 1 ms first-sample budget
+            timer = setInterval(deliver, 5); // never cleared: the leak
+            return () => {};
+          },
+          async close() {
+            state = { state: 'disconnected', since: 1 };
+          },
+        };
+      },
+    };
+    const failures: string[] = [];
+    await runProviderConformance(() => syncLeak, { sources: ['a'], timeoutMs: 1, quietMs: 1 }, (ok, m) => {
+      if (!ok) failures.push(m);
+    });
+    clearInterval(timer);
+    expect(failures).toEqual(['no samples are delivered after unsubscribe']);
+  });
+
   it('the sim provider passes with a manual schedule and flush', async () => {
     const manual = createManualSchedule();
     const failures: string[] = [];

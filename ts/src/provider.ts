@@ -447,8 +447,9 @@ export interface ProviderConformanceOptions {
   flush?: () => void | Promise<void>;
   /**
    * Real-time quiet window after `unsubscribe` (default 100 ms). It is
-   * stretched to three times the longest gap seen between deliveries, capped
-   * at `timeoutMs`, so slow-ticking providers are observed over several ticks.
+   * stretched to three times the longest gap seen between deliveries, so
+   * slow-ticking providers are observed over several ticks. Bounded to
+   * 20 ms–10 s and independent of `timeoutMs`.
    */
   quietMs?: number;
 }
@@ -457,6 +458,10 @@ export interface ProviderConformanceOptions {
  * Conformance kit: every provider package runs this against its provider
  * (with a fake backend). Mirrors the registry's `runContributionKindConformance`.
  */
+/** Bounds of the post-unsubscribe quiet window (see `ProviderConformanceOptions.quietMs`). */
+const MIN_QUIET_MS = 20;
+const MAX_QUIET_MS = 10_000;
+
 export async function runProviderConformance(
   makeProvider: () => HolodeckProvider,
   options: ProviderConformanceOptions,
@@ -511,7 +516,9 @@ export async function runProviderConformance(
   unsubscribe();
   const after = calls;
   const gaps = deliveredAt.slice(1).map((t, i) => t - (deliveredAt[i] as number));
-  const quietMs = Math.min(timeoutMs, Math.max(options.quietMs ?? 100, 3 * Math.max(0, ...gaps)));
+  // Independent of `timeoutMs` (the first-sample budget), and never shorter
+  // than v1.0's fixed 20 ms window, so no option makes the check weaker.
+  const quietMs = Math.min(MAX_QUIET_MS, Math.max(MIN_QUIET_MS, options.quietMs ?? 100, 3 * Math.max(0, ...gaps)));
   await options.flush?.();
   await new Promise((resolve) => setTimeout(resolve, quietMs));
   await options.flush?.();
