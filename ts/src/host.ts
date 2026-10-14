@@ -33,6 +33,7 @@ import {
 import { PROVIDER_KIND } from './provider.js';
 import {
   ContributionRegistry,
+  KindRegistrationError,
   type Contribution,
   type ContributionKind,
   type HolodeckExtension,
@@ -172,7 +173,11 @@ export class HolodeckHost {
         if (!this.registry.hasKind(kind.kind)) offs.push(this.registry.registerKind(kind));
       }
     } catch (error) {
-      // A pending item failed its kind's validation: undo this engine's kinds.
+      // Either a pending item failed validation (nothing committed for that
+      // kind) or a replay hook threw after the kind committed: the registry
+      // then hands back its unregister function on the error. Undo every kind
+      // this call registered so a retry starts clean.
+      if (error instanceof KindRegistrationError) offs.push(error.unregister);
       offs.forEach((off) => off());
       throw error;
     }
@@ -233,28 +238,7 @@ export class HolodeckHost {
 
     this.installing.add(id);
     try {
-      const missing = Object.entries(manifest.requires ?? {}).flatMap(([dep, range]) => {
-        const have = this.installed.get(dep)?.manifest.version;
-        if (have === undefined) return [`${dep} ${range} is not installed`];
-        return satisfiesRange(have, range) ? [] : [`${dep} ${range} is required, ${have} is installed`];
-      });
-      if (missing.length) {
-        throw new HolodeckHostError(`package "${id}" has unmet requirements`, 'MISSING_REQUIREMENT', missing);
-      }
-
-      const unresolvedEngines: string[] = [];
-      const incompatible: string[] = [];
-      for (const [engineId, range] of Object.entries(manifest.engines ?? {})) {
-        const engine = this.engineTable.get(engineId);
-        if (!engine) unresolvedEngines.push(engineId);
-        else if (!satisfiesRange(engine.apiVersion, range)) {
-          incompatible.push(`${engineId} ${range} is required, ${engine.apiVersion} is registered`);
-        }
-      }
-      if (incompatible.length) {
-        throw new HolodeckHostError(`package "${id}" targets an incompatible engine`, 'ENGINE_INCOMPATIBLE', incompatible);
-      }
-
+      this.assertInstallable(manifest);
       const ext = isExtension(source) ? source : await source.createExtension(this.packageContext(manifest, options));
       const mismatch = checkExtensionMatchesManifest(manifest, ext);
       if (!isExtension(source) && source.manifest) {
@@ -266,13 +250,21 @@ export class HolodeckHost {
         throw new HolodeckHostError(`package "${id}" does not match its manifest`, 'MANIFEST_MISMATCH', mismatch);
       }
 
+      // createExtension may have awaited: packages may have been removed or
+      // engines registered meanwhile. Check again immediately before commit.
+      const unresolvedEngines = this.assertInstallable(manifest);
+
       const record: InstalledPackage = { manifest, owners: [owner] };
       let install: InstallResult;
       try {
         install = this.registry.install(ext);
       } catch (error) {
-        // AggregateError = install committed but a hook threw: keep the books straight.
-        if (this.registry.installedExtensions().some((e) => e.id === id)) this.installed.set(id, record);
+        // Only an AggregateError after *this* extension committed (a hook
+        // threw) is ours to record. Anything else, such as a DUPLICATE_EXTENSION
+        // from an extension installed in the shared registry outside this
+        // host, leaves the host's books untouched.
+        const committed = this.registry.installedExtensions().find((e) => e.id === id) === ext;
+        if (error instanceof AggregateError && committed) this.installed.set(id, record);
         throw error;
       }
       this.installed.set(id, record);
@@ -378,6 +370,41 @@ export class HolodeckHost {
         return resolvePackageAsset(assetBase, path);
       },
     };
+  }
+
+  /**
+   * Throws unless a new package can be installed now: no unmanaged extension
+   * with its id in the registry, `requires` met, engine ranges satisfied.
+   * Returns the engines it names that are not registered yet.
+   */
+  private assertInstallable(manifest: HolodeckPackageManifest): string[] {
+    const id = manifest.id;
+    if (!this.installed.has(id) && this.registry.installedExtensions().some((e) => e.id === id)) {
+      throw new HolodeckHostError(`package "${id}" collides with an extension installed outside this host`, 'DUPLICATE_PACKAGE', [
+        `the shared registry already has extension "${id}"; remove it there first`,
+      ]);
+    }
+    const missing = Object.entries(manifest.requires ?? {}).flatMap(([dep, range]) => {
+      const have = this.installed.get(dep)?.manifest.version;
+      if (have === undefined) return [`${dep} ${range} is not installed`];
+      return satisfiesRange(have, range) ? [] : [`${dep} ${range} is required, ${have} is installed`];
+    });
+    if (missing.length) {
+      throw new HolodeckHostError(`package "${id}" has unmet requirements`, 'MISSING_REQUIREMENT', missing);
+    }
+    const unresolvedEngines: string[] = [];
+    const incompatible: string[] = [];
+    for (const [engineId, range] of Object.entries(manifest.engines ?? {})) {
+      const engine = this.engineTable.get(engineId);
+      if (!engine) unresolvedEngines.push(engineId);
+      else if (!satisfiesRange(engine.apiVersion, range)) {
+        incompatible.push(`${engineId} ${range} is required, ${engine.apiVersion} is registered`);
+      }
+    }
+    if (incompatible.length) {
+      throw new HolodeckHostError(`package "${id}" targets an incompatible engine`, 'ENGINE_INCOMPATIBLE', incompatible);
+    }
+    return unresolvedEngines;
   }
 
   /** Add `owner` to an installed package if its version is compatible. */

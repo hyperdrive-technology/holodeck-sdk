@@ -97,6 +97,20 @@ function stableStringify(value: unknown): string {
 
 const refKey = (objectId: string, param: string) => `${objectId}\u0000${param}`;
 
+/**
+ * Object ids, params and connection ids come from documents, so they can be
+ * `__proto__`, `constructor` and so on. Every dictionary keyed by them has a
+ * null prototype: assignment then always creates an own property (never
+ * reaches `Object.prototype`), and lookups never see inherited members.
+ */
+function dict<T>(entries?: Readonly<Record<string, T>>): Record<string, T> {
+  const out = Object.create(null) as Record<string, T>;
+  if (entries) for (const key of Object.keys(entries)) out[key] = entries[key] as T;
+  return out;
+}
+
+const hasOwn = (o: object, key: string) => Object.prototype.hasOwnProperty.call(o, key);
+
 export class ProviderHubError extends Error {
   constructor(
     message: string,
@@ -116,8 +130,8 @@ export class ProviderHub {
   private byTarget = new Map<string, BindingRef>();
   /** connectionId → source → latest sample */
   private readonly latest = new Map<string, Map<string, Sample>>();
-  private metrics: ObjectValues<SignalValue> = {};
-  private quality: ObjectValues<SignalQuality> = {};
+  private metrics: ObjectValues<SignalValue> = dict();
+  private quality: ObjectValues<SignalQuality> = dict();
   private snapshot: HubSnapshot | undefined;
   private readonly listeners = new Set<() => void>();
   private readonly pending = new Set<Promise<void>>();
@@ -173,7 +187,7 @@ export class ProviderHub {
 
   getSnapshot = (): HubSnapshot => {
     if (!this.snapshot) {
-      const connections: Record<string, ConnectionState> = {};
+      const connections = dict<ConnectionState>();
       for (const [id, slot] of this.slots) connections[id] = { provider: slot.def.provider, status: slot.status };
       this.snapshot = { metrics: this.metrics, quality: this.quality, connections };
     }
@@ -387,14 +401,18 @@ export class ProviderHub {
         const value = applyTransform(t.transform, sample.value);
         const q = sample.quality ?? 'good';
         const current = (metrics ?? this.metrics)[t.objectId];
-        if (!current || !(t.param in current) || !Object.is(current[t.param], value)) {
-          metrics ??= { ...this.metrics };
-          metrics[t.objectId] = { ...current, [t.param]: value };
+        if (!current || !hasOwn(current, t.param) || !Object.is(current[t.param], value)) {
+          metrics ??= dict(this.metrics);
+          const next = dict(current);
+          next[t.param] = value;
+          metrics[t.objectId] = next;
         }
         const currentQ = (quality ?? this.quality)[t.objectId];
-        if (currentQ?.[t.param] !== q) {
-          quality ??= { ...this.quality };
-          quality[t.objectId] = { ...currentQ, [t.param]: q };
+        if (!currentQ || currentQ[t.param] !== q) {
+          quality ??= dict(this.quality);
+          const next = dict(currentQ);
+          next[t.param] = q;
+          quality[t.objectId] = next;
         }
       }
     }
@@ -405,13 +423,13 @@ export class ProviderHub {
 
   /** Rebuild values from the latest samples, keeping unchanged objects' identity. */
   private recomputeAll(): void {
-    const metrics: Record<string, Record<string, SignalValue>> = {};
-    const quality: Record<string, Record<string, SignalQuality>> = {};
+    const metrics = dict<Record<string, SignalValue>>();
+    const quality = dict<Record<string, SignalQuality>>();
     for (const ref of this.byTarget.values()) {
       const sample = this.latest.get(ref.binding.connection)?.get(ref.binding.source);
       if (!sample) continue;
-      (metrics[ref.objectId] ??= {})[ref.param] = applyTransform(ref.binding.transform, sample.value);
-      (quality[ref.objectId] ??= {})[ref.param] = sample.quality ?? 'good';
+      (metrics[ref.objectId] ??= dict())[ref.param] = applyTransform(ref.binding.transform, sample.value);
+      (quality[ref.objectId] ??= dict())[ref.param] = sample.quality ?? 'good';
     }
     const nextMetrics = shareStructure(this.metrics, metrics);
     const nextQuality = shareStructure(this.quality, quality);
@@ -440,13 +458,14 @@ export class ProviderHub {
 /** Keep `prev`'s object identities wherever `next` is equal; return `prev` if nothing changed. */
 function shareStructure<T>(prev: ObjectValues<T>, next: Record<string, Record<string, T>>): ObjectValues<T> {
   let changed = Object.keys(prev).length !== Object.keys(next).length;
-  const out: Record<string, Readonly<Record<string, T>>> = {};
-  for (const [objectId, params] of Object.entries(next)) {
-    const old = prev[objectId];
+  const out = dict<Readonly<Record<string, T>>>();
+  for (const objectId of Object.keys(next)) {
+    const params = next[objectId] as Record<string, T>;
+    const old = hasOwn(prev, objectId) ? prev[objectId] : undefined;
     const same =
       old !== undefined &&
       Object.keys(old).length === Object.keys(params).length &&
-      Object.entries(params).every(([k, v]) => k in old && Object.is(old[k], v));
+      Object.keys(params).every((k) => hasOwn(old, k) && Object.is(old[k], params[k]));
     out[objectId] = same ? old : params;
     if (!same) changed = true;
   }

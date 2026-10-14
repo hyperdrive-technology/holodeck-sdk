@@ -120,10 +120,20 @@ export function engineOfKind(kind: string): string | undefined {
   return dot > 0 ? kind.slice(0, dot) : undefined;
 }
 
-/** A path inside the package: relative, no `..`, no scheme, no backslashes. */
+/**
+ * A path inside the package: relative, no `..` segment, no scheme. Also
+ * rejects everything the WHATWG URL parser would rewrite into something else,
+ * so the string checked here is the path that gets resolved:
+ * - `%` (encoded traversal such as `%2e%2e/` or `%2f`),
+ * - backslashes (parsed as `/` in special URLs),
+ * - ASCII control characters, tab/CR/LF (stripped anywhere), and leading or
+ *   trailing whitespace (trimmed, so `" https://x"` would become absolute),
+ * - `?` and `#` (they end the path).
+ */
 export function isPackageRelativePath(path: unknown): path is string {
   if (!isNonEmptyStr(path)) return false;
-  if (path.startsWith('/') || path.includes('\\') || /^[a-z][a-z0-9+.-]*:/i.test(path)) return false;
+  if (path !== path.trim() || /[\u0000-\u001f\u007f%\\?#]/.test(path)) return false;
+  if (path.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(path)) return false;
   return path.split('/').every((segment) => segment !== '..');
 }
 
@@ -320,8 +330,16 @@ export function checkExtensionMatchesManifest(manifest: HolodeckPackageManifest,
  */
 export function resolvePackageAsset(assetBase: string, path: string): string {
   if (!isPackageRelativePath(path)) throw new HolodeckPackageError(`asset path "${path}" escapes the package`);
-  const base = assetBase.endsWith('/') ? assetBase : `${assetBase}/`;
-  return new URL(path, base).toString();
+  const base = new URL(assetBase);
+  base.search = '';
+  base.hash = '';
+  if (!base.pathname.endsWith('/')) base.pathname = `${base.pathname}/`;
+  const resolved = new URL(path, base);
+  // Belt and braces: whatever the parser did, the result must sit under the base directory.
+  if (resolved.origin !== base.origin || !resolved.href.startsWith(base.href) || resolved.search || resolved.hash) {
+    throw new HolodeckPackageError(`asset path "${path}" escapes the package`);
+  }
+  return resolved.href;
 }
 
 export interface HolodeckPackageContext {

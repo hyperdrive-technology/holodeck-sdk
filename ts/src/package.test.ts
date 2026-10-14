@@ -51,6 +51,18 @@ describe('paths and origins', () => {
     ['https://cdn/x.js', false],
     ['C:\\x', false],
     ['', false],
+    // GPT review sdk#23 P1: inputs the URL parser would normalise outside the package
+    ['%2e%2e/private.svg', false],
+    ['..%2fprivate.svg', false],
+    ['a%20b.svg', false],
+    [' https://other.example/a.svg', false],
+    ['\thttps://other.example/a.svg', false],
+    ['a/\n../../b', false],
+    ['a.svg ', false],
+    ['a\u0000.svg', false],
+    ['a?x=1', false],
+    ['a#frag', false],
+    ['icons/aws ec2.svg', true],
   ])('isPackageRelativePath(%j) = %s', (p, ok) => {
     expect(isPackageRelativePath(p)).toBe(ok);
   });
@@ -82,6 +94,17 @@ describe('paths and origins', () => {
     expect(resolvePackageAsset('https://cdn.example/pkg/assets/', './a.glb')).toBe('https://cdn.example/pkg/assets/a.glb');
     expect(() => resolvePackageAsset('https://cdn.example/a/', '../b')).toThrow(/escapes/);
     expect(() => resolvePackageAsset('https://cdn.example/a/', 'https://evil/x')).toThrow(/escapes/);
+  });
+
+  it('keeps resolved assets under the base (GPT review sdk#23 P1)', () => {
+    for (const bad of ['%2e%2e/private.svg', ' https://other.example/a.svg', '\t//other.example/a.svg', 'x/%2e%2e/%2e%2e/y']) {
+      expect(() => resolvePackageAsset('https://cdn.example/pkg/assets/', bad)).toThrow(/escapes/);
+    }
+    expect(resolvePackageAsset('https://cdn.example/pkg/assets?v=1#top', 'a.svg')).toBe('https://cdn.example/pkg/assets/a.svg');
+    expect(resolvePackageAsset('file:///opt/pkg/assets', 'logos/a.svg')).toBe('file:///opt/pkg/assets/logos/a.svg');
+    expect(validateHolodeckPackageManifest(manifest({ entry: '%2e%2e/evil.js' }))).toEqual([
+      'entry: must be a relative path inside the package',
+    ]);
   });
 });
 

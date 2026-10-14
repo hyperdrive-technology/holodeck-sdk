@@ -402,6 +402,40 @@ describe('ProviderHub', () => {
   });
 });
 
+describe('ProviderHub with hostile ids (GPT review sdk#23 P1)', () => {
+  it('never writes through __proto__ object ids, params or connection ids', async () => {
+    const { provider, sessions } = fakeProvider();
+    const { hub } = setup([provider]);
+    hub.setConnections([conn('__proto__')]);
+    hub.setBindings([bind('__proto__', 'polluted', '__proto__', 's'), bind('a', 'constructor', '__proto__', 's')]);
+    await hub.settled();
+    sessions[0]!.emit([{ source: 's', value: 1, ts: 1 }]);
+    hub.setBindings([bind('__proto__', 'polluted', '__proto__', 's'), bind('a', 'constructor', '__proto__', 's')]); // recomputeAll
+    const probe: Record<string, unknown> = {};
+    expect(probe.polluted).toBeUndefined();
+    expect(Object.prototype).not.toHaveProperty('polluted');
+    const snap = hub.getSnapshot();
+    expect(Object.keys(snap.metrics).sort()).toEqual(['__proto__', 'a']);
+    expect(Object.getOwnPropertyDescriptor(snap.metrics, '__proto__')?.value).toEqual({ polluted: 1 });
+    expect(Object.getOwnPropertyDescriptor(snap.metrics.a, 'constructor')?.value).toBe(1);
+    expect(Object.keys(snap.connections)).toEqual(['__proto__']);
+    await hub.dispose();
+  });
+
+  it('does not treat inherited members as existing params', async () => {
+    const { provider, sessions } = fakeProvider();
+    const { hub } = setup([provider]);
+    hub.setConnections([conn('c')]);
+    hub.setBindings([bind('a', 'toString', 'c', 's')]);
+    await hub.settled();
+    const listener = vi.fn();
+    hub.subscribe(listener);
+    sessions[0]!.emit([{ source: 's', value: 5, ts: 1 }]);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(hub.getSnapshot().metrics.a).toEqual({ toString: 5 });
+  });
+});
+
 describe('invertTransform', () => {
   it('passes values through without a transform and keeps null', () => {
     expect(invertTransform(undefined, 3)).toBe(3);

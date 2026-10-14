@@ -114,7 +114,7 @@ assets/                 GLB, SVG, PNG referenced by contributions
 | `requires` | Other Holodeck packages that must be installed first (id → range). Forms a DAG. |
 | `permissions.network` | Origins providers may contact (`https://monitoring.*.amazonaws.com`). Each provider's `origins` must be covered. Hosts show these before install and may enforce them. |
 | `assetLicenses` | Assets under a different licence than `license`, for example vendor icon sets and their trademark notices. Hosts show `notice` in credits. |
-| `entry`, `assets` | Package-relative paths; no `..`, no absolute paths or URLs. |
+| `entry`, `assets` | Package-relative paths. No `..`, absolute paths or URLs. Also none of the things a URL parser would rewrite: `%` escapes, `\`, `?`, `#`, control characters, or surrounding whitespace. |
 
 Unknown fields are errors (typos fail loudly). Marketplace facets (`engine`, `theme`, `library`, `provider`, `importer`,
 `check`) are derived from the manifest with `packageRoles`, never declared, so they cannot drift.
@@ -171,7 +171,10 @@ host.uninstallPackage('holodeck.aws');
 4. Check `engines` against registered engines → `ENGINE_INCOMPATIBLE`. Engines not registered yet are
    reported in `unresolvedEngines`; their kinds wait as `pending` and replay when the engine registers.
 5. `createExtension(ctx)` and compare the result with the manifest → `MANIFEST_MISMATCH`.
-6. `registry.install(ext)`, which is atomic and validates every item against its kind.
+6. Re-run steps 3–4 (the factory may have awaited while packages or engines changed). Also refuse an id
+   that an extension installed outside this host already uses in a shared registry → `DUPLICATE_PACKAGE`.
+7. `registry.install(ext)`, which is atomic and validates every item against its kind. Ownership is
+   recorded only for this install's own commit.
 
 **Ownership.** Each installed package has a set of owners: `USER_OWNER` for direct installs, and the ids
 of host-product extensions that embed it. A package stays installed while it has an owner **or** an
