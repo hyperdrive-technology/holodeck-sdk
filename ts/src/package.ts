@@ -140,7 +140,8 @@ export function isPackageRelativePath(path: unknown): path is string {
 }
 
 const ORIGIN = /^(https|wss|http|ws):\/\/([^/:]+)(:\d{1,5})?$/;
-const LABEL = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+/** A DNS label: lowercase letters, digits and hyphens, not starting or ending with a hyphen (`xn--bcher-kva` is valid). */
+const LABEL = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 
 /**
  * Network permission pattern: `scheme://host[:port]` with scheme https, wss,
@@ -282,16 +283,24 @@ export function validateHolodeckPackageManifest(raw: unknown): string[] {
   return errors;
 }
 
-export type HolodeckPackageErrorCode = 'INVALID_MANIFEST' | 'ASSET_ESCAPES_PACKAGE';
+/** `PACKAGE_ERROR` is the code of errors constructed with the original `(message, details?)` signature. */
+export type HolodeckPackageErrorCode = 'INVALID_MANIFEST' | 'ASSET_ESCAPES_PACKAGE' | 'PACKAGE_ERROR';
 
 export class HolodeckPackageError extends Error {
-  constructor(
-    message: string,
-    public readonly code: HolodeckPackageErrorCode,
-    public readonly details: readonly string[] = [],
-  ) {
-    super(details.length ? `${message}:\n- ${details.join('\n- ')}` : message);
+  readonly code: HolodeckPackageErrorCode;
+  readonly details: readonly string[];
+
+  /** Original signature, kept for existing callers. */
+  constructor(message: string, details?: readonly string[]);
+  constructor(message: string, code: HolodeckPackageErrorCode, details?: readonly string[]);
+  constructor(message: string, codeOrDetails?: HolodeckPackageErrorCode | readonly string[], details?: readonly string[]) {
+    // Runtime check, not just overloads: plain JS callers may pass `(message, details)`.
+    const code = typeof codeOrDetails === 'string' ? codeOrDetails : 'PACKAGE_ERROR';
+    const list = Array.isArray(codeOrDetails) ? (codeOrDetails as readonly string[]) : (details ?? []);
+    super(list.length ? `${message}:\n- ${list.join('\n- ')}` : message);
     this.name = 'HolodeckPackageError';
+    this.code = code;
+    this.details = list;
   }
 }
 

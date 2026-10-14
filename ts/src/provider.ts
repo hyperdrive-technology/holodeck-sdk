@@ -515,7 +515,8 @@ export async function runProviderConformance(
   await options.flush?.();
   await new Promise((resolve) => setTimeout(resolve, quietMs));
   await options.flush?.();
-  assert(calls === after, `no samples are delivered after unsubscribe (observed ${calls - after} within ${quietMs} ms)`);
+  // Message text unchanged from v1.0 so existing consumers matching it keep working.
+  assert(calls === after, 'no samples are delivered after unsubscribe');
   unsubscribe(); // idempotent
 
   if (provider.capabilities.read && session.read) {

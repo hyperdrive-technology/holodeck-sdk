@@ -271,7 +271,7 @@ describe('runProviderConformance catches broken providers', () => {
     await runProviderConformance(() => leaky, { sources: ['a'], quietMs: 1, flush: () => manual.tick() }, (ok, m) => {
       if (!ok) failures.push(m);
     });
-    expect(failures).toEqual([expect.stringMatching(/^no samples are delivered after unsubscribe \(observed 2 within/)]);
+    expect(failures).toEqual(['no samples are delivered after unsubscribe']);
   });
 
   it('#25: stretches the quiet window to cover slow-ticking providers', async () => {

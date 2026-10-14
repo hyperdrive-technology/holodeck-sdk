@@ -77,7 +77,7 @@
           "items": {
             "type": "string",
             "description": "scheme://host[:port]; at most one whole-label * wildcard, never in the last two labels (#29)",
-            "pattern": "^(https|wss|http|ws)://(([a-z0-9]+(-[a-z0-9]+)*\\.)*(\\*\\.)?([a-z0-9]+(-[a-z0-9]+)*\\.)*[a-z0-9]+(-[a-z0-9]+)*\\.[a-z0-9]+(-[a-z0-9]+)*|[a-z0-9]+(-[a-z0-9]+)*)(:\\d{1,5})?$"
+            "pattern": "^(https|wss|http|ws)://(([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)*(\\*\\.)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]*[a-z0-9])?\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?|[a-z0-9]([a-z0-9-]*[a-z0-9])?)(:\\d{1,5})?$"
           }
         }
       }

@@ -933,6 +933,12 @@ describe('invertTransform', () => {
     expect(invertTransform({ ...t, clamp: false }, 2)).toBe(30);
     expect(invertTransform({ ...t, outMin: 1, outMax: 1 }, 5)).toBe(10);
   });
+  it('sdk#31 review: finite extrapolation near the limits can be written through', () => {
+    const t = { kind: 'scale', inMin: 0, inMax: 1, outMin: 1e308, outMax: 1.1e308, clamp: false } as const;
+    expect(invertTransform(t, 1e308 + 2 * (1.1e308 - 1e308))).toBeCloseTo(2, 10);
+    expect(invertTransform({ kind: 'scale', inMin: 0, inMax: 1, outMin: 0, outMax: Number.MIN_VALUE }, Number.MIN_VALUE)).toBe(1);
+  });
+
   it('#28: stays finite for wide ranges and rejects values that cannot map', () => {
     const wide = { kind: 'scale', inMin: -1e308, inMax: 1e308, outMin: 0, outMax: 1 } as const;
     expect(invertTransform(wide, 0.5)).toBe(0);
