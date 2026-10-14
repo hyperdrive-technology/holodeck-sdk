@@ -240,7 +240,10 @@ export class HolodeckHost {
   ): Promise<PackageInstallReport> {
     let manifest: HolodeckPackageManifest;
     try {
-      manifest = parseHolodeckPackageManifest(rawManifest);
+      // Manifests are plain JSON data: validate and keep a private frozen
+      // copy, so later edits to the caller's object (or to what `package()`
+      // returns) cannot change recorded versions or requirements.
+      manifest = deepFreeze(parseHolodeckPackageManifest(structuredClone(rawManifest)));
     } catch (error) {
       const details = (error as { details?: string[] }).details ?? [String(error)];
       throw new HolodeckHostError('invalid package manifest', 'INVALID_MANIFEST', details);
@@ -286,7 +289,7 @@ export class HolodeckHost {
         // createExtension may have awaited: packages may have been removed or
         // engines registered meanwhile. Check again immediately before commit.
         const unresolvedEngines = this.assertInstallable(manifest);
-        const record: InstalledPackage = { manifest, owners: [owner] };
+        const record = packageRecord(manifest, [owner]);
         let install: InstallResult;
         try {
           install = this.registry.install(ext);
@@ -331,7 +334,7 @@ export class HolodeckHost {
           throw new HolodeckHostError(`package "${id}" is still required`, 'REQUIRED_BY', requirers.map((r) => `${r} requires ${id}`));
         }
       }
-      this.installed.set(id, { ...pkg, owners: remaining });
+      this.installed.set(id, packageRecord(pkg.manifest, remaining));
       const removed = this.collectGarbage();
       return { removed, kept: removed.includes(id) ? [] : [id] };
     });
@@ -351,7 +354,7 @@ export class HolodeckHost {
       const released: string[] = [];
       for (const [id, pkg] of this.installed) {
         if (!pkg.owners.includes(owner)) continue;
-        this.installed.set(id, { ...pkg, owners: pkg.owners.filter((o) => o !== owner) });
+        this.installed.set(id, packageRecord(pkg.manifest, pkg.owners.filter((o) => o !== owner)));
         released.push(id);
       }
       const removed = this.collectGarbage();
@@ -469,7 +472,7 @@ export class HolodeckHost {
         `${owner} needs ${id} ${range ?? manifest.version}`,
       ]);
     }
-    this.installed.set(id, { ...existing, owners: [...existing.owners, owner] });
+    this.installed.set(id, packageRecord(existing.manifest, [...existing.owners, owner]));
     return { packageId: id, shared: true, unresolvedEngines: [] };
   }
 
@@ -530,6 +533,20 @@ export class HolodeckHost {
       if (!this.registry.installedExtensions().some((e) => e.id === id)) this.installed.delete(id);
     }
   }
+}
+
+/** Installed-package records are immutable; owner changes replace the record. */
+function packageRecord(manifest: HolodeckPackageManifest, owners: readonly string[]): InstalledPackage {
+  return Object.freeze({ manifest, owners: Object.freeze([...owners]) });
+}
+
+/** Freeze a plain-JSON value recursively. */
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  }
+  return value;
 }
 
 /** Call every function; return what they threw, in order. */

@@ -636,6 +636,57 @@ describe('HolodeckHost', () => {
     });
   });
 
+  describe('GPT review sdk#23 r4 regressions (manifest snapshots)', () => {
+    it('P1: mutating the caller\'s manifest after install changes nothing', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      const m = manifest({ requires: undefined });
+      await host.installPackage(m, ext('holodeck.cloud', '0.1.0', {}));
+      m.version = '2.5.0';
+      m.engines = { 'holodeck.iso': '^9.0' };
+      await expect(
+        host.installPackage(manifest({ version: '2.5.0' }), ext('holodeck.cloud', '2.5.0', {}), { owner: 'ext.a', range: '^2.0' }),
+      ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+      expect(host.package('holodeck.cloud')?.manifest.version).toBe('0.1.0');
+      expect(() => host.registerEngine(isoEngine('1.2.0'))).not.toThrow();
+    });
+
+    it('P1: records returned by package()/packages() are frozen', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}));
+      const record = host.package('holodeck.cloud')!;
+      expect(() => {
+        (record.manifest as { version: string }).version = '2.5.0';
+      }).toThrow(TypeError);
+      expect(() => {
+        (record.manifest.engines as Record<string, string>)['holodeck.iso'] = '^9.0';
+      }).toThrow(TypeError);
+      expect(() => (record.owners as string[]).push('ext.evil')).toThrow(TypeError);
+      expect(() => {
+        (record as { owners: string[] }).owners = [];
+      }).toThrow(TypeError);
+      expect(host.packages()[0]!.manifest.version).toBe('0.1.0');
+      await expect(
+        host.installPackage(manifest({ version: '2.5.0' }), ext('holodeck.cloud', '2.5.0', {}), { owner: 'ext.a', range: '^2.0' }),
+      ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+    });
+
+    it('P1: requirements are snapshotted too', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await host.installPackage(manifest(), ext('holodeck.cloud', '0.1.0', {}));
+      const aws = manifest({ id: 'holodeck.aws', requires: { 'holodeck.cloud': '^0.1' } });
+      await host.installPackage(aws, ext('holodeck.aws', '0.1.0', {}));
+      delete aws.requires;
+      expect(() => host.uninstallPackage('holodeck.cloud')).toThrow(expect.objectContaining({ code: 'REQUIRED_BY' }));
+    });
+
+    it('rejects manifests that are not plain data', async () => {
+      const host = new HolodeckHost({ name: 't' });
+      await expect(host.installPackage({ ...manifest(), keywords: [() => 'x'] }, ext('holodeck.cloud', '0.1.0', {}))).rejects.toMatchObject({
+        code: 'INVALID_MANIFEST',
+      });
+    });
+  });
+
   describe('documents', () => {
     const doc = (body: unknown, engine = 'holodeck.iso'): HolodeckDocument => ({
       format: HOLODECK_DOCUMENT_FORMAT,

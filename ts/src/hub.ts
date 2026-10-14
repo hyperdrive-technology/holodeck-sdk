@@ -317,24 +317,47 @@ export class ProviderHub {
       this.trackClose(() => session.close(), `closing superseded "${id}" failed`);
       return;
     }
+    // Status updates delivered synchronously from onStatus() are recorded but
+    // not published until setup completes, so no listener can run (and e.g.
+    // remove this connection) while the session is half attached.
+    let ready = false;
+    let offStatus: (() => void) | undefined;
     try {
       slot.status = session.status();
-      slot.offStatus = session.onStatus((status) => {
+      offStatus = session.onStatus((status) => {
         if (!this.isCurrent(id, slot)) return;
         slot.status = status;
-        this.publish();
+        if (ready) this.publish();
       });
     } catch (error) {
       // A session that cannot report status is unusable: close it, show the error.
       slot.status = { state: 'error', message: `session setup failed: ${errorMessage(error)}`, since: this.now() };
       this.log('warn', `connection "${id}" setup failed`, error);
-      this.trackClose(() => session.close(), `closing failed session "${id}" failed`);
+      this.detach(id, session, offStatus);
       this.publish();
       return;
     }
+    if (!this.isCurrent(id, slot)) {
+      // Removed during setup (a provider callback re-entered the hub): the
+      // slot's own cleanup ran before it owned this session, so do it here.
+      this.detach(id, session, offStatus);
+      return;
+    }
     slot.session = session;
+    slot.offStatus = offStatus;
+    ready = true;
     this.resubscribe(slot);
     this.publish();
+  }
+
+  /** Unsubscribe a session's status listener and close it (tracked for dispose). */
+  private detach(id: string, session: ProviderSession, offStatus: (() => void) | undefined): void {
+    try {
+      offStatus?.();
+    } catch (error) {
+      this.log('warn', `unsubscribing "${id}" failed`, error);
+    }
+    this.trackClose(() => session.close(), `closing session "${id}" failed`);
   }
 
   private isCurrent(id: string, slot: Slot): boolean {

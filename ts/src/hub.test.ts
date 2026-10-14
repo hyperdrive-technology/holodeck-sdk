@@ -505,6 +505,62 @@ describe('ProviderHub session setup failures (GPT review sdk#23 r3 P2)', () => {
   });
 });
 
+describe('ProviderHub sessions removed around setup (GPT review sdk#23 r4 P2)', () => {
+  const eager = (onStatusCall?: () => void) => {
+    const calls = { closed: 0, unsubscribed: 0 };
+    const provider: HolodeckProvider = {
+      id: 'test.eager',
+      label: 'Eager',
+      capabilities: {},
+      async connect() {
+        return {
+          status: () => {
+            onStatusCall?.();
+            return { state: 'connecting', since: 0 };
+          },
+          onStatus: (listener) => {
+            listener({ state: 'live', since: 1 }); // delivered synchronously, during setup
+            return () => calls.unsubscribed++;
+          },
+          subscribe: () => () => {},
+          close: async () => {
+            calls.closed++;
+          },
+        };
+      },
+    };
+    return { provider, calls };
+  };
+
+  it('immediate status + a listener that removes the connection: session closed and unsubscribed', async () => {
+    const { provider, calls } = eager();
+    const { hub } = setup([provider]);
+    let removed = false;
+    hub.subscribe(() => {
+      if (!removed && hub.getSnapshot().connections.c?.status.state === 'live') {
+        removed = true;
+        hub.setConnections([]);
+      }
+    });
+    hub.setConnections([conn('c', 'test.eager')]);
+    await hub.settled();
+    await hub.dispose();
+    expect(removed).toBe(true);
+    expect(calls).toEqual({ closed: 1, unsubscribed: 1 });
+  });
+
+  it('a connection removed by a re-entrant call during setup is still closed and unsubscribed', async () => {
+    let hub!: ProviderHub;
+    const { provider, calls } = eager(() => hub.setConnections([]));
+    ({ hub } = setup([provider]));
+    hub.setConnections([conn('c', 'test.eager')]);
+    await hub.settled();
+    expect(hub.getSnapshot().connections).toEqual({});
+    await hub.dispose();
+    expect(calls).toEqual({ closed: 1, unsubscribed: 1 });
+  });
+});
+
 describe('ProviderHub with hostile ids (GPT review sdk#23 P1)', () => {
   it('never writes through __proto__ object ids, params or connection ids', async () => {
     const { provider, sessions } = fakeProvider();
