@@ -139,15 +139,36 @@ export function isPackageRelativePath(path: unknown): path is string {
   return path.split('/').every((segment) => segment !== '..');
 }
 
-/** `https://host[:port]`, `wss://…`; the first host label may be `*`. No paths. */
-const ORIGIN = /^(https|wss|http|ws):\/\/(\*\.)?[a-z0-9-]+(\.[a-z0-9-*]+)*(:\d{1,5})?$/;
+const ORIGIN = /^(https|wss|http|ws):\/\/([^/:]+)(:\d{1,5})?$/;
+const LABEL = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
+/**
+ * Network permission pattern: `scheme://host[:port]` with scheme https, wss,
+ * http or ws and no path. Host labels are lowercase `[a-z0-9-]`. At most one
+ * label may be the whole-label wildcard `*`, and never one of the last two
+ * labels, so a pattern always names a concrete registrable domain:
+ * `https://*.amazonaws.com` and `https://monitoring.*.amazonaws.com` are
+ * valid; `https://*.com`, `https://example.*`, `https://a.*.*` and
+ * `https://ex*ample.com` are not (#29). Public suffixes with two labels
+ * (`*.co.uk`) are not detected.
+ */
 export function isOriginPattern(origin: unknown): origin is string {
-  return isNonEmptyStr(origin) && ORIGIN.test(origin);
+  if (!isNonEmptyStr(origin)) return false;
+  const m = ORIGIN.exec(origin);
+  if (!m) return false;
+  const labels = (m[2] as string).split('.');
+  const wildcards = labels.filter((l) => l === '*').length;
+  if (!labels.every((l) => l === '*' || LABEL.test(l))) return false;
+  if (wildcards === 0) return true;
+  return wildcards === 1 && labels.length >= 3 && labels.indexOf('*') < labels.length - 2;
 }
 
-/** Does a concrete origin (`https://monitoring.eu-west-1.amazonaws.com`) match a pattern? */
+/**
+ * Does a concrete origin (`https://monitoring.eu-west-1.amazonaws.com`) match
+ * a pattern? `*` matches exactly one label. Invalid patterns match nothing.
+ */
 export function originMatches(pattern: string, origin: string): boolean {
+  if (!isOriginPattern(pattern)) return false;
   if (pattern === origin) return true;
   const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[a-z0-9-]+');
   return new RegExp(`^${escaped}$`).test(origin);
@@ -261,9 +282,12 @@ export function validateHolodeckPackageManifest(raw: unknown): string[] {
   return errors;
 }
 
+export type HolodeckPackageErrorCode = 'INVALID_MANIFEST' | 'ASSET_ESCAPES_PACKAGE';
+
 export class HolodeckPackageError extends Error {
   constructor(
     message: string,
+    public readonly code: HolodeckPackageErrorCode,
     public readonly details: readonly string[] = [],
   ) {
     super(details.length ? `${message}:\n- ${details.join('\n- ')}` : message);
@@ -274,7 +298,7 @@ export class HolodeckPackageError extends Error {
 /** Throws `HolodeckPackageError` listing every problem; returns the manifest typed. */
 export function parseHolodeckPackageManifest(raw: unknown): HolodeckPackageManifest {
   const errors = validateHolodeckPackageManifest(raw);
-  if (errors.length) throw new HolodeckPackageError('invalid holodeck.package.json', errors);
+  if (errors.length) throw new HolodeckPackageError('invalid holodeck.package.json', 'INVALID_MANIFEST', errors);
   return raw as HolodeckPackageManifest;
 }
 
@@ -331,7 +355,9 @@ export function checkExtensionMatchesManifest(manifest: HolodeckPackageManifest,
  * its own assets.
  */
 export function resolvePackageAsset(assetBase: string, path: string): string {
-  if (!isPackageRelativePath(path)) throw new HolodeckPackageError(`asset path "${path}" escapes the package`);
+  if (!isPackageRelativePath(path)) {
+    throw new HolodeckPackageError(`asset path "${path}" escapes the package`, 'ASSET_ESCAPES_PACKAGE');
+  }
   const base = new URL(assetBase);
   base.search = '';
   base.hash = '';
@@ -339,7 +365,7 @@ export function resolvePackageAsset(assetBase: string, path: string): string {
   const resolved = new URL(path, base);
   // Belt and braces: whatever the parser did, the result must sit under the base directory.
   if (resolved.origin !== base.origin || !resolved.href.startsWith(base.href) || resolved.search || resolved.hash) {
-    throw new HolodeckPackageError(`asset path "${path}" escapes the package`);
+    throw new HolodeckPackageError(`asset path "${path}" escapes the package`, 'ASSET_ESCAPES_PACKAGE');
   }
   return resolved.href;
 }

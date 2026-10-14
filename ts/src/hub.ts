@@ -28,6 +28,7 @@
 
 import { applyTransform, validateTransform, type BindingRef, type ProviderConnection, type ValueTransform } from './document.js';
 import { isNonEmptyStr, isObj, isSignalValue, isStr } from './guards.js';
+import { scaleNumber } from './math.js';
 import type {
   HolodeckProvider,
   ProviderContext,
@@ -84,6 +85,8 @@ interface Slot {
   subscribedKey: string | undefined;
   /** Bumped per subscribe; samples or handles from an older generation are discarded. */
   subscription: number;
+  /** `status` is the hub's own "subscribe failed" error, not the provider's. */
+  subscribeFailed: boolean;
   closed: boolean;
 }
 
@@ -142,7 +145,8 @@ function copyStatus(raw: unknown, now: number): ProviderStatus {
   return makeStatus('error', now, 'provider returned an invalid status');
 }
 
-const refKey = (objectId: string, param: string) => `${objectId}\u0000${param}`;
+/** Collision-free composite key (#24): JSON encoding, so no separator character can be forged. */
+const refKey = (objectId: string, param: string) => JSON.stringify([objectId, param]);
 
 /**
  * Object ids, params and connection ids come from documents, so they can be
@@ -158,10 +162,12 @@ function dict<T>(entries?: Readonly<Record<string, T>>): Record<string, T> {
 
 const hasOwn = (o: object, key: string) => Object.prototype.hasOwnProperty.call(o, key);
 
+export type ProviderHubErrorCode = 'DISPOSED' | 'UNBOUND' | 'NOT_CONNECTED' | 'NOT_WRITABLE' | 'NOT_INVERTIBLE';
+
 export class ProviderHubError extends Error {
   constructor(
     message: string,
-    public readonly code: 'DISPOSED' | 'UNBOUND' | 'NOT_CONNECTED' | 'NOT_WRITABLE' | 'NOT_INVERTIBLE',
+    public readonly code: ProviderHubErrorCode,
   ) {
     super(message);
     this.name = 'ProviderHubError';
@@ -303,7 +309,7 @@ export class ProviderHub {
   // ---------------------------------------------------------------------------
 
   private connectionKey(def: ProviderConnection): string {
-    return `${def.provider}\u0000${stableStringify(def.config ?? {})}`;
+    return JSON.stringify([def.provider, stableStringify(def.config ?? {})]);
   }
 
   private now(): number {
@@ -328,6 +334,7 @@ export class ProviderHub {
       unsubscribe: undefined,
       subscribedKey: undefined,
       subscription: 0,
+      subscribeFailed: false,
       closed: false,
     };
     this.slots.set(def.id, slot);
@@ -380,6 +387,7 @@ export class ProviderHub {
       slot.status = copyStatus(session.status(), this.now());
       offStatus = session.onStatus((status) => {
         if (!this.isCurrent(id, slot)) return;
+        slot.subscribeFailed = false;
         slot.status = copyStatus(status, this.now());
         if (ready) this.publish();
       });
@@ -483,7 +491,7 @@ export class ProviderHub {
     if (!session || slot.closed) return;
     const id = slot.def.id;
     const sources = [...(this.bySource.get(id)?.keys() ?? [])].sort();
-    const key = sources.join('\u0000');
+    const key = JSON.stringify(sources);
     if (key === slot.subscribedKey) return;
     // Retire the old subscription first. Its key is forgotten until the
     // replacement succeeds, so a failure here or below is retried by the next
@@ -502,7 +510,10 @@ export class ProviderHub {
     const latest = this.latest.get(id);
     if (latest) for (const source of [...latest.keys()]) if (!sources.includes(source)) latest.delete(source);
     if (!sources.length) {
-      if (slot.subscription === generation) slot.subscribedKey = key;
+      if (slot.subscription === generation) {
+        slot.subscribedKey = key;
+        this.clearSubscribeFailure(slot, session);
+      }
       return;
     }
     // subscribe() may deliver synchronously, and a listener may then rebind or
@@ -516,6 +527,7 @@ export class ProviderHub {
       if (live()) {
         slot.unsubscribe = handle;
         slot.subscribedKey = key;
+        this.clearSubscribeFailure(slot, session);
       } else {
         try {
           handle();
@@ -525,8 +537,24 @@ export class ProviderHub {
       }
     } catch (error) {
       if (!live()) return;
+      slot.subscribeFailed = true;
       slot.status = makeStatus('error', this.now(), `subscribe failed: ${errorMessage(error)}`);
       this.log('warn', `subscribe on "${id}" failed`, error);
+    }
+  }
+
+  /**
+   * After a successful (re)subscribe, replace the hub's own "subscribe
+   * failed" status with the session's current one (#27). A genuine provider
+   * error is kept, because the session itself still reports it.
+   */
+  private clearSubscribeFailure(slot: Slot, session: ProviderSession): void {
+    if (!slot.subscribeFailed) return;
+    slot.subscribeFailed = false;
+    try {
+      slot.status = copyStatus(session.status(), this.now());
+    } catch (error) {
+      slot.status = makeStatus('error', this.now(), `session status failed: ${errorMessage(error)}`);
     }
   }
 
@@ -674,11 +702,10 @@ export function invertTransform(transform: ValueTransform | undefined, value: Si
   if (transform.kind !== 'scale') {
     throw new ProviderHubError(`a "${transform.kind}" binding cannot be written through`, 'NOT_INVERTIBLE');
   }
-  if (typeof value !== 'number') throw new TypeError('writing through a scale binding needs a number');
-  const outSpan = transform.outMax - transform.outMin;
-  const t = outSpan === 0 ? 0 : (value - transform.outMin) / outSpan;
-  const clamped = transform.clamp === false ? t : Math.min(1, Math.max(0, t));
-  return transform.inMin + clamped * (transform.inMax - transform.inMin);
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError('writing through a scale binding needs a finite number');
+  const raw = scaleNumber(value, transform.outMin, transform.outMax, transform.inMin, transform.inMax, transform.clamp !== false);
+  if (raw === null) throw new TypeError('value maps outside the finite number range');
+  return raw;
 }
 
 function errorMessage(error: unknown): string {

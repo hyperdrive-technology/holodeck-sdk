@@ -44,6 +44,16 @@ describe('applyTransform', () => {
       expect(applyTransform(t, 'abc')).toBeNull();
       expect(applyTransform(t, '  ')).toBeNull();
     });
+    it('#28: stays finite across the whole double range', () => {
+      const wide: ValueTransform = { kind: 'scale', inMin: 0, inMax: 1, outMin: -1e308, outMax: 1e308 };
+      expect(applyTransform(wide, 0)).toBe(-1e308);
+      expect(applyTransform(wide, 0.5)).toBe(0);
+      expect(applyTransform(wide, 1)).toBe(1e308);
+      const wideIn: ValueTransform = { kind: 'scale', inMin: -1e308, inMax: 1e308, outMin: 0, outMax: 1 };
+      expect(applyTransform(wideIn, 0)).toBe(0.5);
+      expect(applyTransform({ ...wide, clamp: false }, 1e300)).toBeNull(); // extrapolates past MAX_VALUE
+    });
+
     it('maps a zero-width input range to outMin', () => {
       expect(applyTransform({ ...t, inMin: 5, inMax: 5, outMin: 3 }, 9)).toBe(3);
     });
@@ -170,6 +180,18 @@ describe('validateHolodeckDocument', () => {
         expect.stringMatching(/^extensions/),
       ]),
     );
+  });
+
+  it('#26: validates metadata field types', () => {
+    expect(validateHolodeckDocument(doc({ metadata: { description: 'd', author: 'a', created: 'c', updated: 'u', tags: ['x'] } }))).toEqual([]);
+    expect(validateHolodeckDocument(doc({ metadata: { tags: 7, author: 1, created: {}, description: false, updated: [] } }))).toEqual([
+      'metadata.description: must be a string',
+      'metadata.author: must be a string',
+      'metadata.created: must be a string',
+      'metadata.updated: must be a string',
+      'metadata.tags: must be an array of strings',
+    ]);
+    expect(validateHolodeckDocument(doc({ metadata: { tags: ['ok', 3] } }))).toEqual(['metadata.tags: must be an array of strings']);
   });
 
   it('rejects non-objects and non-string requires values', () => {

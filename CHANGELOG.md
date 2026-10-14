@@ -24,6 +24,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `holodeck.flow.theme`; `DocumentCheck`, `HolodeckImporter`, `runDocumentChecks`, `findImporters`.
 - Version ranges (`satisfiesRange`: `*`, exact, `^`, `~`, `>=`).
 
+### Fixed (post-#23 review follow-ups)
+
+- `ProviderHub` composite keys are collision-free, even for ids containing NUL (#24). A successful
+  subscription retry restores the session's own status (#27).
+- `runProviderConformance` catches leaked subscriptions deterministically via `flush` and an adaptive
+  quiet window (#25).
+- Document `metadata` fields are type-checked (#26).
+- `scale` transforms and their inverse stay finite across the whole double range (#28).
+- `permissions.network` allows at most one whole-label wildcard, never in the last two labels, in both
+  TS and schema (#29).
+- `HolodeckPackageError` carries a `code`; error code unions are exported and documented (#30).
+
 ### Deprecated
 
 - `Provider`, `ProviderConfig`, `MetricsQuery`, `MetricsResult`: use `HolodeckProvider` and bindings.
