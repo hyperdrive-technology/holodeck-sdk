@@ -18,7 +18,7 @@ jobs:
       run:
         working-directory: ts
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # pnpm 10.26+ is required: ts/pnpm-workspace.yaml uses `allowBuilds`
       # (older pnpm rejects the file with "packages field missing or empty").
@@ -46,7 +46,7 @@ jobs:
     name: Validate JSON Schema
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
