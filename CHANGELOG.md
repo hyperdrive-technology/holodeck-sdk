@@ -9,8 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **ESM-only.** `@holodeck/sdk` ships one ES module build (`"type": "module"`, `exports` with
-  `types` + `import`). Node 26 consumers can still `require()` it via require(esm); there is no
+- **BREAKING (0.2.0): ESM-only.** `@holodeck/sdk` ships one ES module build (`"type": "module"`, `exports` with
+  `types` + `import` + `default`). Node 26 consumers can still `require('@holodeck/sdk')` via require(esm) (the `default` condition is what lets `require()` resolve through the exports map); there is no
   top-level await. Removes the dual-package hazard (two module instances, failing `instanceof`).
 - PACKAGING.md §7 matches `@holodeck/flow-runtime`: the `evaluate({ inputs, params, state, dtMs, nowMs })`
   signature, variadic `min`/`max`, the graph body format, the built-in blocks, and that

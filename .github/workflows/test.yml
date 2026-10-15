@@ -39,12 +39,13 @@ jobs:
         run: pnpm exec vitest run
       - name: Build
         run: pnpm build
-      # ESM-only package: load the build by import and by Node's require(esm),
+      # ESM-only package: load the build BY NAME (through the exports map) by import and by
+      # Node's require(esm) — a relative path would skip exports and miss a missing `default`;
       # which also proves there is no top-level await.
       - name: Smoke-test built package (import + require(esm))
         run: |
-          node --input-type=module -e "const m = await import('./dist/index.js'); if (typeof m.HolodeckHost !== 'function') throw new Error('import failed')"
-          node -e "const m = require('./dist/index.js'); if (typeof m.HolodeckHost !== 'function') throw new Error('require(esm) failed')"
+          node --input-type=module -e "const m = await import('@holodeck/sdk'); if (typeof m.HolodeckHost !== 'function') throw new Error('import failed')"
+          node -e "const m = require('@holodeck/sdk'); if (typeof m.HolodeckHost !== 'function') throw new Error('require(esm) failed')"
       # Lint is not run: there is no ESLint config in ts/ yet (eslint 8 exits 2 with
       # "no configuration found"). Add an eslint.config.js and a step here when ready.
 
