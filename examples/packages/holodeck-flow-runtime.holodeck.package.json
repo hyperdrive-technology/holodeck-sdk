@@ -1,0 +1,26 @@
+{
+  "$schema": "../../schema/holodeck-package.v1.schema.json",
+  "schemaVersion": "holodeck.package.v1",
+  "id": "holodeck.flow-runtime",
+  "name": "Flow runtime",
+  "description": "In-browser runtime for holodeck.flow documents: the structural blocks (const, delay, signal in/out) and the holodeck.flow.local provider that deploys and runs a flow.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "contributes": [
+    "holodeck.flow.block",
+    "holodeck.provider"
+  ],
+  "engines": {
+    "holodeck.flow": "^1.0"
+  },
+  "providers": [
+    "holodeck.flow.local"
+  ],
+  "entry": "dist/holodeck-package.js",
+  "repository": "github:hyperdrive-technology/holodeck",
+  "keywords": [
+    "runtime",
+    "flow",
+    "provider"
+  ]
+}

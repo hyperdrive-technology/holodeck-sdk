@@ -3,13 +3,25 @@
   "schemaVersion": "holodeck.package.v1",
   "id": "holodeck.logic",
   "name": "Logic blocks",
-  "description": "Generic function blocks for the flow engine (AND, OR, NOT, XOR, compare, math, timers, latches, edges, select) plus inject/debug/signal nodes, and the in-browser runtime that deploys and runs a flow.",
+  "description": "Generic function blocks for the flow engine (AND, OR, NOT, XOR, compare, math, timers, latches, edges, select) plus inject/debug nodes and the fbd-light theme. Runs on holodeck.flow-runtime.",
   "version": "0.1.0",
   "license": "MIT",
-  "contributes": ["holodeck.flow.block", "holodeck.flow.theme", "holodeck.provider"],
-  "engines": { "holodeck.flow": "^1.0" },
-  "providers": ["holodeck.flow.local"],
+  "contributes": [
+    "holodeck.flow.block",
+    "holodeck.flow.theme"
+  ],
+  "engines": {
+    "holodeck.flow": "^1.0"
+  },
+  "requires": {
+    "holodeck.flow-runtime": "^0.1"
+  },
   "entry": "dist/index.js",
   "repository": "github:hyperdrive-technology/holodeck",
-  "keywords": ["library", "logic", "flow", "fbd"]
+  "keywords": [
+    "library",
+    "logic",
+    "flow",
+    "fbd"
+  ]
 }

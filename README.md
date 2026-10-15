@@ -45,8 +45,9 @@ pnpm exec vitest run
 pnpm build
 ```
 
-The package builds to `ts/dist/` with CommonJS, ES module, and declaration
-outputs. There is no package at the repository root and no sibling checkout
+The package is ESM-only: it builds one ES module plus declarations to
+`ts/dist/`. Node 26 consumers can still `require()` it (require(esm)); keep
+top-level `await` out of the source so that stays true. There is no package at the repository root and no sibling checkout
 is needed for SDK development. The related Holodeck checkout currently uses
 sibling `file:` dependencies; see its
 [setup guide](https://github.com/hyperdrive-technology/holodeck/blob/main/CONTRIBUTING.md).
