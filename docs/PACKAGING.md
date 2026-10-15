@@ -337,7 +337,12 @@ in `@holodeck/flow-runtime` (holodeck `packages/flow-runtime/README.md`); in out
 interface FlowBlockDefinition {                // kind holodeck.flow.block
   id: string;                                  // 'logic.and'
   label: string; category: string;             // 'Logic'
-  inputs:  { name: string; type: 'bool' | 'number' | 'string' | 'any'; variadic?: { min: number; max: number } }[];
+  inputs:  {
+    name: string; type: 'bool' | 'number' | 'string' | 'any';
+    default?: FlowValue;                       // value while unwired; default: the type default
+    variadic?: boolean;                        // repeatable: ports in1 … in<max>
+    min?: number; max?: number;                // variadic only; default 2 / 16, max ≤ 64
+  }[];
   outputs: { name: string; type: … }[];
   params?: Record<string, ParamSpec>;          // e.g. TON preset time
   initialState?(params): State;
@@ -345,6 +350,16 @@ interface FlowBlockDefinition {                // kind holodeck.flow.block
   evaluate(ctx: { inputs; params; state; dtMs; nowMs }): { outputs; state? };
 }
 ```
+
+A variadic input is a flat flag plus bounds, for example an AND with two to eight inputs:
+
+```ts
+inputs: [{ name: 'in', type: 'bool', variadic: true, min: 2, max: 8 }]
+```
+
+It stands for the ports `in1` … `in8`; wires target those names and `evaluate` receives `inputs.in` as an
+array in index order. `min`/`max` without `variadic: true` is an error, as is a variadic name ending in a
+digit.
 
 A flow document's body is `holodeck.flow.graph.v1`: `{ nodes: [{ id, block, params?, position }], wires:
 [{ id, from: { node, port }, to: { node, port } }] }`. The runtime has four built-in blocks: `flow.const`,

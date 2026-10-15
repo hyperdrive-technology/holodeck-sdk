@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signature, variadic `min`/`max`, the graph body format, the built-in blocks, and that
   `holodeck.flow.local` ships in `holodeck.flow-runtime` with a host signal bridge.
 
+### Fixed
+
+- PACKAGING.md §7 documents a variadic input as `variadic?: boolean; min?: number; max?: number`
+  (e.g. `{ name: 'in', type: 'bool', variadic: true, min: 2, max: 8 }`), not `variadic: { min, max }`,
+  which `@holodeck/flow-runtime` rejects. A doc test (`ts/src/docs.test.ts`) checks the outline and runs the
+  example through the runtime's variadic rules (#38).
+
 ### Added
 
 - Packaging contract v1 ([docs/PACKAGING.md](docs/PACKAGING.md)): `holodeck.package.v1` manifests
