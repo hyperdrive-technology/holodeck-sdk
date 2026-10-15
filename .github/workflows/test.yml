@@ -22,7 +22,7 @@ jobs:
 
       # pnpm 10.26+ is required: ts/pnpm-workspace.yaml uses `allowBuilds`
       # (older pnpm rejects the file with "packages field missing or empty").
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.33.2
 
