@@ -9,6 +9,8 @@ import {
   generateId,
   validateScene,
   calculateSceneStats,
+  liveOverlayChrome,
+  liveOverlayCopy,
   type SceneFile,
   type SceneNode,
   type SceneEdge,
@@ -551,5 +553,72 @@ describe('Integration Tests', () => {
 
     const stats = calculateSceneStats(scene);
     expect(stats.nodeCount).toBe(3);
+  });
+});
+
+describe('liveOverlayCopy', () => {
+  it('is Live · <selected target> when that target is live', () => {
+    expect(
+      liveOverlayCopy({
+        state: 'live',
+        targetId: 'in-browser',
+        targetLabel: 'in-browser PLC',
+      }),
+    ).toBe('Live · in-browser PLC');
+    expect(
+      liveOverlayCopy({
+        state: 'live',
+        targetId: 'line-1',
+        targetLabel: 'line-1',
+      }),
+    ).toBe('Live · line-1');
+  });
+
+  it('keeps stale and disconnected on the same target label', () => {
+    expect(
+      liveOverlayCopy({
+        state: 'stale',
+        targetId: 'inbound',
+        targetLabel: 'inbound',
+      }),
+    ).toBe('Stale values · inbound');
+    expect(
+      liveOverlayCopy({
+        state: 'disconnected',
+        targetId: 'inbound',
+        targetLabel: 'inbound',
+      }),
+    ).toBe('Disconnected · inbound');
+    expect(
+      liveOverlayCopy({
+        state: 'disconnected',
+        targetId: 'in-browser',
+        targetLabel: 'in-browser PLC',
+      }),
+    ).toBe('Disconnected · in-browser PLC');
+    expect(
+      liveOverlayCopy({
+        state: 'disconnected',
+        targetId: 'in-browser',
+        targetLabel: 'in-browser PLC',
+      }),
+    ).not.toBe('Live · in-browser PLC');
+  });
+});
+
+describe('liveOverlayChrome', () => {
+  it('uses one color pair per connection state', () => {
+    expect(liveOverlayChrome('live')).toEqual({
+      background: 'rgba(16, 185, 129, 0.92)',
+      color: '#042f1e',
+    });
+    expect(liveOverlayChrome('stale')).toEqual({
+      background: 'rgba(245, 158, 11, 0.94)',
+      color: '#3b2503',
+    });
+    expect(liveOverlayChrome('disconnected')).toEqual({
+      background: 'rgba(75, 85, 99, 0.94)',
+      color: '#f9fafb',
+    });
   });
 });

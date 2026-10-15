@@ -242,6 +242,39 @@ export interface SceneFile {
   extensions?: Record<string, any>;
 }
 
+export type HolodeckLiveConnectionState = 'live' | 'stale' | 'disconnected';
+
+export interface HolodeckLiveConnection {
+  state: HolodeckLiveConnectionState;
+  targetId: string;
+  targetLabel: string;
+}
+
+export function liveOverlayCopy(connection: HolodeckLiveConnection): string {
+  switch (connection.state) {
+    case 'live':
+      return `Live · ${connection.targetLabel}`;
+    case 'stale':
+      return `Stale values · ${connection.targetLabel}`;
+    default:
+      return `Disconnected · ${connection.targetLabel}`;
+  }
+}
+
+export function liveOverlayChrome(state: HolodeckLiveConnectionState): {
+  background: string;
+  color: string;
+} {
+  switch (state) {
+    case 'live':
+      return { background: 'rgba(16, 185, 129, 0.92)', color: '#042f1e' };
+    case 'stale':
+      return { background: 'rgba(245, 158, 11, 0.94)', color: '#3b2503' };
+    default:
+      return { background: 'rgba(75, 85, 99, 0.94)', color: '#f9fafb' };
+  }
+}
+
 // =============================================================================
 // PLUGIN INTERFACES
 // =============================================================================
