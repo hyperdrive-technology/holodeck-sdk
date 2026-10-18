@@ -182,3 +182,6 @@ temp/
 *.rej
 *.patch
 *.diff
+
+# Local git worktrees (see hyperdrive AGENTS.md "Git worktrees")
+.worktrees/
