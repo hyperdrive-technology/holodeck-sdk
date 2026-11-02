@@ -10,9 +10,10 @@ the same process. The maintainer is [@DezLitz](https://github.com/DezLitz).
 
 ## Local setup
 
-Use Node 26, as pinned in [`.node-version`](.node-version), and pnpm 10.33.2,
-the version used in CI. pnpm must be at least 10.26 to read the `allowBuilds`
-setting in [`ts/pnpm-workspace.yaml`](ts/pnpm-workspace.yaml).
+Use Node 26.13.0, as pinned in [`.node-version`](.node-version), and pnpm 12.16.1
+(`packageManager` in `ts/package.json`), the versions used in CI. pnpm 12 fails an
+install on any dependency build script not listed in `allowBuilds` in
+[`ts/pnpm-workspace.yaml`](ts/pnpm-workspace.yaml).
 
 From your checkout root:
 

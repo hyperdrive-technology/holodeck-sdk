@@ -14,17 +14,19 @@ jobs:
   test-typescript:
     name: Test TypeScript
     runs-on: boat
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: ts
     steps:
       - uses: actions/checkout@v4
 
-      # pnpm 10.26+ is required: ts/pnpm-workspace.yaml uses `allowBuilds`
-      # (older pnpm rejects the file with "packages field missing or empty").
+      # pnpm 12 (ts/package.json packageManager; the lockfile is pnpm 12 format). It
+      # fails the install on dependency build scripts not approved in
+      # ts/pnpm-workspace.yaml `allowBuilds`.
       - uses: pnpm/action-setup@v4
         with:
-          version: 10.33.2
+          version: 12.16.1
 
       - uses: actions/setup-node@v4
         with:
@@ -51,7 +53,9 @@ jobs:
 
   validate-schema:
     name: Validate JSON Schema
-    runs-on: boat
+    # Three ajv runs, no install: the 2-vCPU size is plenty.
+    runs-on: boat-small
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -1,2 +1,4 @@
+# pnpm 12 fails installs on unapproved dependency build scripts (ERR_PNPM_IGNORED_BUILDS).
+# esbuild (via tsup/vitest) runs a postinstall that checks its platform binary.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
