@@ -33,8 +33,9 @@ and [good first issues](https://github.com/hyperdrive-technology/holodeck-sdk/is
 
 ## Quick start
 
-Use **Node 26** ([`.node-version`](.node-version)) and **pnpm 10.33.2** to match
-CI. pnpm 10.26 or newer is required for the workspace's `allowBuilds` setting.
+Use **Node 26.13.0** ([`.node-version`](.node-version)) and **pnpm 12.16.1** to match
+CI. pnpm 12 fails an install on dependency build scripts not approved in the
+workspace's `allowBuilds` setting.
 
 ```bash
 git clone https://github.com/hyperdrive-technology/holodeck-sdk.git

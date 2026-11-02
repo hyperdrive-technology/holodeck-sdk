@@ -1,6 +1,14 @@
 name: Publish Packages
 
-# Tag-only: PR / main checks live in test.yml.
+# Tag-only: PR / main checks live in test.yml. The tests run again here on purpose:
+# they gate the publish of exactly the tagged commit.
+#
+# Runs on boat.dev like the rest of CI. `npm publish` authenticates with the
+# NPM_TOKEN secret, which works on any runner. Do NOT add `--provenance` (or
+# `publishConfig.provenance`) while publish-npm is on boat: npm only issues
+# provenance attestations from GitHub-hosted runners and fails the publish on a
+# self-hosted one. If provenance is wanted, move publish-npm alone to a
+# GitHub-hosted runner and give it `permissions: id-token: write`.
 on:
   push:
     tags:
@@ -9,7 +17,8 @@ on:
 jobs:
   test-typescript:
     name: Test TypeScript Package
-    runs-on: ubuntu-latest
+    runs-on: boat
+    timeout-minutes: 15
     
     steps:
       - name: Checkout
@@ -18,7 +27,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.33.2
+          version: 12.16.1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -49,7 +58,8 @@ jobs:
 
   publish-npm:
     name: Publish to NPM
-    runs-on: ubuntu-latest
+    runs-on: boat
+    timeout-minutes: 15
     needs: [test-typescript]
     if: startsWith(github.ref, 'refs/tags/v')
     
@@ -60,7 +70,7 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 10.33.2
+          version: 12.16.1
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -96,7 +106,8 @@ jobs:
 
   validate-schema:
     name: Validate JSON Schema
-    runs-on: ubuntu-latest
+    runs-on: boat-small
+    timeout-minutes: 10
     
     steps:
       - name: Checkout
