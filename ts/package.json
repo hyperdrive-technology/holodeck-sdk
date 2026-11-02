@@ -49,7 +49,7 @@
   "homepage": "https://github.com/hyperdrive-technology/holodeck-sdk#readme",
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@typescript-eslint/eslint-plugin": "^6.0.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^6.0.0",
     "eslint": "^8.0.0",
     "tsup": "^8.0.0",
