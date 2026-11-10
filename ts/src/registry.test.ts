@@ -330,7 +330,7 @@ describe('ContributionRegistry', () => {
     } })).toThrow(expect.objectContaining({ code: 'DUPLICATE_ID' }));
     r.uninstall('first');
     r.install({ id: 'replacement', version: '1', contributions: {
-      'test.part': [{ id: 'original', label: 'Replacement' }],
+      'test.part': [{ id: 'original', label: 'Replacement' } as Part],
     } });
     r.registerKind(partKind);
     expect(r.ownerOf(partKind.kind, 'original')).toBe('replacement');
@@ -361,12 +361,12 @@ describe('ContributionRegistry', () => {
     expect(r.get(partKind.kind, 'original')).toBe(original);
     expect(r.ownerOf(partKind.kind, 'original')).toBe('first');
     expect(() => r.install({ id: 'duplicate', version: '1', contributions: {
-      'test.part': [{ id: 'original', label: 'Duplicate' }],
+      'test.part': [{ id: 'original', label: 'Duplicate' } as Part],
     } })).toThrow(expect.objectContaining({ code: 'DUPLICATE_ID' }));
     r.uninstall('first');
     expect(r.list(partKind.kind)).toEqual([]);
     r.install({ id: 'replacement', version: '1', contributions: {
-      'test.part': [{ id: 'original', label: 'Replacement' }],
+      'test.part': [{ id: 'original', label: 'Replacement' } as Part],
     } });
   });
 

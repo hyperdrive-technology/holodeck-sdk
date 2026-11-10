@@ -182,3 +182,6 @@ temp/
 *.rej
 *.patch
 *.diff
+
+# dev-check results (scripts/dev-check.sh → .dev-check/last.json)
+.dev-check/

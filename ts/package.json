@@ -23,9 +23,11 @@
     "dev": "tsup src/index.ts --format esm --dts --watch",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
-    "type-check": "tsc --noEmit",
+    "type-check": "tsc -p tsconfig.check.json",
     "test": "vitest",
-    "test:coverage": "vitest --coverage",
+    "test:coverage": "vitest run --coverage",
+    "smoke:dist": "node scripts/smoke-dist.mjs",
+    "validate:schema": "ajv compile -c ajv-formats -s ../schema/scenefile.schema.json && ajv compile --spec=draft2020 -c ajv-formats -s ../schema/holodeck-package.v1.schema.json -s ../schema/holodeck-document.v1.schema.json && ajv validate --spec=draft2020 -c ajv-formats -s ../schema/holodeck-package.v1.schema.json -d \"../examples/packages/*.holodeck.package.json\"",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -51,6 +53,9 @@
     "@types/node": "^20.0.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
+    "@vitest/coverage-v8": "1.6.1",
+    "ajv-cli": "5.0.0",
+    "ajv-formats": "3.0.1",
     "eslint": "^8.0.0",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",

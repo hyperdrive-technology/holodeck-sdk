@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Development: `scripts/dev-check.sh [fast|push|full]` is the one local entry point for checks (pre-push hook via
+  `scripts/install-hooks.sh`; see TESTING.md). `pnpm type-check` now type-checks the tests too; the schema check
+  uses a pinned `ajv-cli` devDependency (`pnpm run validate:schema`); PR CI starts only from a `labeled` event.
 - **BREAKING (0.2.0): ESM-only.** `@holodeck/sdk` ships one ES module build (`"type": "module"`, `exports` with
   `types` + `import` + `default`). Node 26 consumers can still `require('@holodeck/sdk')` via require(esm) (the `default` condition is what lets `require()` resolve through the exports map); there is no
   top-level await. Removes the dual-package hazard (two module instances, failing `instanceof`).

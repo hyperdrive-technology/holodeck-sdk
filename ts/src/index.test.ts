@@ -175,7 +175,7 @@ describe('validateScene', () => {
 
   it('should require metadata name', () => {
     const scene = createValidScene();
-    delete scene.metadata.name;
+    delete (scene.metadata as any).name;
     const result = validateScene(scene);
     expect(result.valid).toBe(false);
     expect(result.errors).toContain('Scene file must have a name');
@@ -199,7 +199,7 @@ describe('validateScene', () => {
 
   it('should detect duplicate node IDs', () => {
     const scene = createValidScene();
-    scene.scene.nodes[1].id = 'node1'; // Same as first node
+    scene.scene.nodes[1]!.id = 'node1'; // Same as first node
     const result = validateScene(scene);
     expect(result.valid).toBe(false);
     expect(result.errors).toContain('Duplicate node id: node1');
@@ -235,7 +235,7 @@ describe('validateScene', () => {
 
   it('should validate edge source references', () => {
     const scene = createValidScene();
-    scene.scene.edges[0].source = 'nonexistent';
+    scene.scene.edges[0]!.source = 'nonexistent';
     const result = validateScene(scene);
     expect(result.valid).toBe(false);
     expect(result.errors).toContain('Edge edge1 references non-existent source node: nonexistent');
@@ -243,7 +243,7 @@ describe('validateScene', () => {
 
   it('should validate edge target references', () => {
     const scene = createValidScene();
-    scene.scene.edges[0].target = 'nonexistent';
+    scene.scene.edges[0]!.target = 'nonexistent';
     const result = validateScene(scene);
     expect(result.valid).toBe(false);
     expect(result.errors).toContain('Edge edge1 references non-existent target node: nonexistent');

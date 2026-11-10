@@ -29,7 +29,7 @@ function section7(): string {
 }
 
 function tsBlocks(text: string): string[] {
-  return [...text.matchAll(/```ts\n([\s\S]*?)```/g)].map((m) => m[1]);
+  return [...text.matchAll(/```ts\n([\s\S]*?)```/g)].map((m) => m[1] ?? '');
 }
 
 /** The runtime's variadic checks for one input spec, as error strings (empty = valid). */

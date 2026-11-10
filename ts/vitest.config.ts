@@ -7,6 +7,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'json', 'html'],
+      include: ['src/**'],
       exclude: [
         'coverage/**',
         'dist/**',
@@ -26,17 +27,19 @@ export default defineConfig({
         '**/vitest.{workspace,projects}.[jt]s?(on)',
         '**/.{eslint,mocha,prettier}rc.{?(c|m)js,yml}'
       ],
+      // Flat keys: Vitest reads a nested `global: {...}` as a file glob, so the old
+      // config never enforced anything (#22). Coverage is an L5/release check
+      // (`pnpm test:coverage`), not part of dev-check or PR CI.
       thresholds: {
-        global: {
-          branches: 80,
-          functions: 80,
-          lines: 80,
-          statements: 80
-        }
+        branches: 80,
+        functions: 80,
+        lines: 80,
+        statements: 80
       }
-    },
-    typecheck: {
-      enabled: true
     }
+    // No `typecheck` block: Vitest's type-test mode only checks `*.test-d.ts` files and
+    // spawned tsc on every run for nothing (#22). `pnpm type-check` (tsconfig.check.json)
+    // now type-checks the tests themselves, including the `expectTypeOf` type tests in
+    // src/types.test.ts.
   }
 });

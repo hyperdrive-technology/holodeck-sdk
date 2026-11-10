@@ -18,12 +18,13 @@ install on any dependency build script not listed in `allowBuilds` in
 From your checkout root:
 
 ```bash
-cd ts
-pnpm install --frozen-lockfile
-pnpm type-check
-pnpm exec vitest run
-pnpm build
+(cd ts && pnpm install --frozen-lockfile)
+scripts/install-hooks.sh       # pre-push runs scripts/dev-check.sh fast
+scripts/dev-check.sh full      # every check PR CI runs, ~6 s
 ```
+
+[TESTING.md](TESTING.md) has the check ladder (`fast` / `push` / `full`), what each
+changed path selects, and measured timings.
 
 The package and lockfile live in `ts/`; there is no root package. Build output
 is generated in `ts/dist/` as CommonJS, ES modules, and type declarations.
@@ -38,32 +39,28 @@ Run package commands from `ts/`:
 | Scene types, utilities, importer/provider contracts | [`src/index.ts`](ts/src/index.ts), [`src/index.test.ts`](ts/src/index.test.ts) | `pnpm exec vitest run src/index.test.ts` |
 | Contribution registry and extension routing | [`src/registry.ts`](ts/src/registry.ts), [`src/registry.test.ts`](ts/src/registry.test.ts) | `pnpm exec vitest run src/registry.test.ts` |
 | All package tests | `src/*.test.ts` | `pnpm exec vitest run` |
-| TypeScript types | [`tsconfig.json`](ts/tsconfig.json) | `pnpm type-check` |
+| TypeScript types (sources and tests) | [`tsconfig.check.json`](ts/tsconfig.check.json) | `pnpm type-check` |
+| Public API type tests | [`src/types.test.ts`](ts/src/types.test.ts) | `pnpm type-check` |
+| JSON Schemas and example manifests | [`schema/`](schema/), [`examples/packages/`](examples/packages/) | `pnpm run validate:schema` |
+| Built package loads by name | [`scripts/smoke-dist.mjs`](ts/scripts/smoke-dist.mjs) | `pnpm build && pnpm run smoke:dist` |
 | Package output and declarations | [`package.json`](ts/package.json) | `pnpm build` |
 
 `pnpm test` starts Vitest in watch mode for local development. `pnpm dev`
 rebuilds the package when source files change.
 
-Run the schema check from the **repository root**, matching CI:
+`pnpm run validate:schema` compiles the three schemas with the pinned `ajv-cli`
+devDependency and validates every example package manifest; `package.test.ts` checks
+the same examples against the TypeScript validator. For scene-schema changes, include
+a representative scene and demonstrate that it validates or is rejected as intended.
 
-```bash
-npx -y -p ajv-cli@5 -p ajv-formats@3 ajv compile -c ajv-formats -s schema/scenefile.schema.json
-```
-
-This checks that the schema compiles; it does not validate example scene data.
-For schema changes, include a representative scene and demonstrate that it
-validates or is rejected as intended.
-
-[`test.yml`](.github/workflows/test.yml) runs on pull requests to `main` and
-pushes to `main`. Its TypeScript job installs with the frozen lockfile, checks
-types, runs the full test suite once, and builds. Its other job compiles the
-JSON Schema with the command above. Type checking excludes test files; Vitest
-executes them.
+[`test.yml`](.github/workflows/test.yml) runs on a pull request only when the `ci`
+label is added (pre-1.0 policy: heavy CI runs once, on the final reviewed head of a
+major change). `scripts/dev-check.sh full` runs exactly its commands locally, and
+`scripts/dev-check.test.mjs` keeps the two lists identical.
 
 The package has lint scripts, but there is no ESLint configuration yet, so
-linting is not a working local check or a CI gate. The coverage script also
-needs `@vitest/coverage-v8`, which is not currently declared; coverage is not
-run in CI. Use the checks above when reporting validation.
+linting is not a working local check or a CI gate. Coverage
+(`pnpm test:coverage`) is a release-time check with 80 % thresholds.
 
 [`publish.yml`](.github/workflows/publish.yml) runs on `v*` tags and contains
 the npm release job. Releases are maintained separately from contribution PRs.

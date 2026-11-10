@@ -39,11 +39,9 @@ workspace's `allowBuilds` setting.
 
 ```bash
 git clone https://github.com/hyperdrive-technology/holodeck-sdk.git
-cd holodeck-sdk/ts
-pnpm install --frozen-lockfile
-pnpm type-check
-pnpm exec vitest run
-pnpm build
+cd holodeck-sdk
+(cd ts && pnpm install --frozen-lockfile)
+scripts/dev-check.sh full     # type-check, tests, schemas, build, dist smoke test
 ```
 
 The package is ESM-only: it builds one ES module plus declarations to
@@ -53,8 +51,8 @@ is needed for SDK development. The related Holodeck checkout currently uses
 sibling `file:` dependencies; see its
 [setup guide](https://github.com/hyperdrive-technology/holodeck/blob/main/CONTRIBUTING.md).
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for focused tests, the JSON Schema check,
-and how local commands map to CI.
+See [TESTING.md](TESTING.md) for the check ladder and how local commands map to CI,
+and [CONTRIBUTING.md](CONTRIBUTING.md) for focused tests.
 
 ## Repository map
 
@@ -72,7 +70,8 @@ and how local commands map to CI.
 | [`schema/holodeck-package.v1.schema.json`](schema/holodeck-package.v1.schema.json), [`schema/holodeck-document.v1.schema.json`](schema/holodeck-document.v1.schema.json) | JSON Schemas for package manifests and the document envelope |
 | [`examples/packages/`](examples/packages/) | Example manifests: iso engine, cloud archetypes, AWS components, AWS provider, logic blocks |
 | [`examples/README.md`](examples/README.md) | Pointers to SDK usage examples |
-| [`.github/workflows/test.yml`](.github/workflows/test.yml) | Pull request and `main` checks |
+| [`.github/workflows/test.yml`](.github/workflows/test.yml) | Pull request checks (opt-in: `ci` label) |
+| [`scripts/dev-check.sh`](scripts/dev-check.sh), [`TESTING.md`](TESTING.md) | Local check ladder (`fast` / `push` / `full`) and pre-push hook |
 | [`.github/workflows/publish.yml`](.github/workflows/publish.yml) | Tag-triggered package release workflow |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release history |
 
