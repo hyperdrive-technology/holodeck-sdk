@@ -1,0 +1,13 @@
+{
+  // `pnpm type-check` (L1+): the package sources AND their tests. tsconfig.json
+  // (used by the tsup build) excludes tests so they never reach dist/; Vitest strips
+  // types without checking them, so before this file existed test code was never
+  // type-checked at all.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*", "vitest.config.ts"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -640,7 +640,8 @@ describe('HolodeckHost', () => {
   describe('GPT review sdk#23 r4 regressions (manifest snapshots)', () => {
     it('P1: mutating the caller\'s manifest after install changes nothing', async () => {
       const host = new HolodeckHost({ name: 't' });
-      const m = manifest({ requires: undefined });
+      // An explicit `requires: undefined` key (not just a missing one) must snapshot cleanly.
+      const m = manifest({ requires: undefined } as unknown as Partial<HolodeckPackageManifest>);
       await host.installPackage(m, ext('holodeck.cloud', '0.1.0', {}));
       m.version = '2.5.0';
       m.engines = { 'holodeck.iso': '^9.0' };
@@ -663,7 +664,7 @@ describe('HolodeckHost', () => {
       }).toThrow(TypeError);
       expect(() => (record.owners as string[]).push('ext.evil')).toThrow(TypeError);
       expect(() => {
-        (record as { owners: string[] }).owners = [];
+        (record as unknown as { owners: string[] }).owners = [];
       }).toThrow(TypeError);
       expect(host.packages()[0]!.manifest.version).toBe('0.1.0');
       await expect(

@@ -1,17 +1,20 @@
-# Pre-1.0 CI policy (Des, 2026-11-03): nothing runs automatically (no push/schedule triggers).
-# PR jobs run only when the PR has the `ci` label (adding it starts a run; every push then runs).
-# Every event on a `ci` PR runs in full, adding an unrelated label included: a skipped run would
-# publish the required check names as skipped (= passing) and could mask a failure (GPT review,
-# holodeck-sdk#45 / wormhole#26).
-# or on demand with
-# `gh workflow run <this file> --ref <branch>` (~/dev/hyperdrive/scripts/ci-run.sh). Minor changes
-# are checked locally instead and recorded with ~/dev/hyperdrive/scripts/ci-local-status.sh, which
-# also satisfies required checks whose jobs were skipped. Policy: ~/dev/hyperdrive/AGENTS.md.
+# Pre-1.0 CI policy (Des, 2026-11-03; dev-loop shift-left 2026-11-11): nothing runs
+# automatically. PR jobs run only on a `labeled` event of a PR that has the `ci` label:
+# adding `ci` (or any label to a `ci` PR) starts one run; pushes do NOT re-run. Heavy CI is
+# run once, by whoever merges, on the final reviewed head of a major PR
+# (~/dev/hyperdrive/scripts/ci-run.sh re-labels to trigger it). A push after that leaves the
+# new head without check runs, which blocks merge until CI is triggered again.
+# Every event on a `ci` PR runs in full, adding an unrelated label included: a skipped run
+# would publish the required check names as skipped (= passing) and could mask a failure
+# (GPT review, holodeck-sdk#45 / wormhole#26).
+# Minor changes are checked locally instead: `scripts/dev-check.sh full` runs these same
+# commands (scripts/dev-check.test.mjs pins the two lists) and writes .dev-check/last.json,
+# which ~/dev/hyperdrive/scripts/ci-local-status.sh posts as `ci/local`. Ladder: TESTING.md.
 name: Test
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [labeled]
     branches: [main]
 
   workflow_dispatch:
@@ -45,38 +48,45 @@ jobs:
           cache-dependency-path: ts/pnpm-lock.yaml
 
       - run: pnpm install --frozen-lockfile
+      # Sources and tests (tsconfig.check.json).
       - name: Type check
         run: pnpm type-check
       - name: Test
         run: pnpm exec vitest run
+      - name: dev-check self-tests (selection logic + this workflow's command list)
+        working-directory: .
+        run: node --test "scripts/*.test.mjs"
       - name: Build
         run: pnpm build
       # ESM-only package: load the build BY NAME (through the exports map) by import and by
-      # Node's require(esm) — a relative path would skip exports and miss a missing `default`;
-      # which also proves there is no top-level await.
+      # Node's require(esm); see ts/scripts/smoke-dist.mjs.
       - name: Smoke-test built package (import + require(esm))
-        run: |
-          node --input-type=module -e "const m = await import('@holodeck/sdk'); if (typeof m.HolodeckHost !== 'function') throw new Error('import failed')"
-          node -e "const m = require('@holodeck/sdk'); if (typeof m.HolodeckHost !== 'function') throw new Error('require(esm) failed')"
+        run: pnpm run smoke:dist
       # Lint is not run: there is no ESLint config in ts/ yet (eslint 8 exits 2 with
       # "no configuration found"). Add an eslint.config.js and a step here when ready.
 
   validate-schema:
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci')
     name: Validate JSON Schema
-    # Three ajv runs, no install: the 2-vCPU size is plenty.
+    # One install + three ajv runs: the 2-vCPU size is plenty.
     runs-on: boat-small
     timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ts
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.16.1
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
-      # `ajv validate` needs -d data; `compile` checks the schema itself.
-      # ajv-formats is needed for "date-time" etc. (strict mode rejects unknown formats).
-      - name: Compile schema
-        run: npx -y -p ajv-cli@5 -p ajv-formats@3 ajv compile -c ajv-formats -s schema/scenefile.schema.json
-      - name: Compile package and document schemas (draft 2020-12)
-        run: npx -y -p ajv-cli@5 -p ajv-formats@3 ajv compile --spec=draft2020 -c ajv-formats -s schema/holodeck-package.v1.schema.json -s schema/holodeck-document.v1.schema.json
-      - name: Validate example package manifests
-        run: npx -y -p ajv-cli@5 -p ajv-formats@3 ajv validate --spec=draft2020 -c ajv-formats -s schema/holodeck-package.v1.schema.json -d "examples/packages/*.holodeck.package.json"
+          cache: pnpm
+          cache-dependency-path: ts/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # ajv-cli / ajv-formats are pinned devDependencies (no `npx -y` download per run).
+      # Compiles scenefile (draft-07) and the package/document schemas (draft 2020-12) and
+      # validates every examples/packages/*.holodeck.package.json; see ts/package.json.
+      - name: Compile schemas and validate example package manifests
+        run: pnpm run validate:schema
